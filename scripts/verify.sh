@@ -332,10 +332,11 @@ else
             continue
         fi
 
-        # No --no-build here: the sample projects are not necessarily in
-        # Mosaic.slnx, so step 2 has not necessarily built them. They still build
-        # in Release with warnings as errors, so this compiles them under the
-        # same rules as the main service.
+        # No --no-build here, unlike the main service above. Mosaic.slnx lists
+        # all three sample projects, so step 2 has already built them and this is
+        # a no-op rebuild costing well under a second. It stays because it is the
+        # one thing that keeps this step honest if a fourth sample is ever added
+        # to the folder and not to the solution.
         dotnet run --project "$csproj" -c Release --no-launch-profile -- \
             schema export --output "$TEMP_DIR/$approach.graphql"
         if [ $? -ne 0 ]; then

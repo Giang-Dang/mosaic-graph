@@ -34,6 +34,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Invoke-WebRequest draws a progress bar by default and erases it afterwards by
+# overwriting the line with spaces, which smears trailing whitespace across the
+# step output. Turning it off also makes the calls measurably faster.
+$ProgressPreference = 'SilentlyContinue'
+
 # ---------------------------------------------------------------------------
 # Paths and expected values
 # ---------------------------------------------------------------------------
@@ -330,10 +335,11 @@ try {
                 continue
             }
 
-            # No --no-build here: the sample projects are not necessarily in
-            # Mosaic.slnx, so step 2 has not necessarily built them. They still
-            # build in Release with warnings as errors, so this compiles them
-            # under the same rules as the main service.
+            # No --no-build here, unlike the main service above. Mosaic.slnx
+            # lists all three sample projects, so step 2 has already built them
+            # and this is a no-op rebuild costing well under a second. It stays
+            # because it is the one thing that keeps this step honest if a
+            # fourth sample is ever added to the folder and not to the solution.
             $out = Join-Path $tempDir "$approach.graphql"
             & dotnet run --project $csproj.FullName -c Release --no-launch-profile -- schema export --output $out
             if ($LASTEXITCODE -ne 0) {
