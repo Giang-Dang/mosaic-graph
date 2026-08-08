@@ -15,7 +15,8 @@ public sealed class InMemoryCatalogData
     /// only contract left between them, so the seed data treats it that way
     /// from the start.
     /// </summary>
-    public static Guid ProductId(int n) => new($"a0000000-0000-4000-8000-{n:D12}");
+    public static Guid ProductId(int n) =>
+        new($"a0000000-0000-4000-8000-{n:D12}");
 
     public IReadOnlyList<Product> Products { get; } =
     [

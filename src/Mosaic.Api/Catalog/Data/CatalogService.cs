@@ -12,21 +12,28 @@ namespace Mosaic.Api.Catalog.Data;
 /// is what makes this version of Mosaic behave the way it does under a nested
 /// query.
 /// </remarks>
-public sealed class CatalogService(InMemoryCatalogData data, ServiceCallCounter counter)
+public sealed class CatalogService(
+    InMemoryCatalogData data,
+    ServiceCallCounter counter)
 {
-    public async Task<IReadOnlyList<Product>> GetProductsAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<Product>> GetProductsAsync(
+        CancellationToken cancellationToken)
     {
         await counter.RecordLookupAsync(cancellationToken);
         return data.Products;
     }
 
-    public async Task<Product?> GetProductByIdAsync(Guid id, CancellationToken cancellationToken)
+    public async Task<Product?> GetProductByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken)
     {
         await counter.RecordLookupAsync(cancellationToken);
         return data.Products.FirstOrDefault(p => p.Id == id);
     }
 
-    public async Task<Product?> GetProductBySkuAsync(string sku, CancellationToken cancellationToken)
+    public async Task<Product?> GetProductBySkuAsync(
+        string sku,
+        CancellationToken cancellationToken)
     {
         await counter.RecordLookupAsync(cancellationToken);
         return data.Products.FirstOrDefault(p => p.Sku == sku);
