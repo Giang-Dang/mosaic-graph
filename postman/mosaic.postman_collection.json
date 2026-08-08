@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "6f1c2a90-3f4c-4f7a-9a1e-2b7d5c8e4a11",
-    "name": "Mosaic - chapters 02-03",
-    "description": "The development loop for Mosaic's single service, as chapter 2 of Federated GraphQL on .NET builds it.\n\nPoint the `baseUrl` environment variable at a running service (`dotnet run --project src/Mosaic.Api`, or `docker compose up`) and run the collection. Every request carries an assertion, so `newman run` is a smoke test as well as a demonstration.\n\nIntrospection only answers when the service runs in the Development environment. HotChocolate 16 disables it everywhere else by default.",
+    "name": "Mosaic - chapters 02-04",
+    "description": "The development loop for Mosaic's single service, as chapters 2 to 4 of Federated GraphQL on .NET build it.\n\nPoint the `baseUrl` environment variable at a running service (`dotnet run --project src/Mosaic.Api`, or `docker compose up`) and run the collection. Every request carries an assertion, so `newman run` is a smoke test as well as a demonstration.\n\nSince chapter 4 the service needs PostgreSQL: `docker compose up -d mosaic-db` before anything here will answer.\n\nIntrospection only answers when the service runs in the Development environment. HotChocolate 16 disables it everywhere else by default.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -408,6 +408,200 @@
           ]
         },
         "description": "An unclosed brace. This never reaches the execution pipeline: the ASP.NET Core transport parses the document before the pipeline runs, so the request is rejected there and no diagnostic listener ever sees it. Chapter 3 measures that."
+      },
+      "response": []
+    },
+    {
+      "name": "A page of the catalog",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const page = body.data.browseProducts;",
+              "",
+              "pm.test(\"a page of three, out of the whole catalog\", function () {",
+              "    pm.expect(page.nodes).to.have.lengthOf(3);",
+              "    pm.expect(page.totalCount).to.eql(25);",
+              "    pm.expect(page.pageInfo.hasNextPage).to.eql(true);",
+              "});",
+              "",
+              "pm.test(\"sorted by title when nobody asked for an order\", function () {",
+              "    const titles = page.nodes.map(function (n) { return n.title; });",
+              "    const sorted = titles.slice().sort();",
+              "    pm.expect(titles).to.eql(sorted);",
+              "});",
+              "",
+              "// A projected id that was never selected comes back as an all-zero",
+              "// Guid rather than as an error, which is the quietest way this can",
+              "// go wrong. Encoded, that Guid is a recognisable constant.",
+              "pm.test(\"the projection kept the identifier\", function () {",
+              "    page.nodes.forEach(function (node) {",
+              "        const raw = Buffer.from(node.id, \"base64\").toString(\"utf8\");",
+              "        pm.expect(raw).to.not.include(\"00000000-0000-0000-0000-000000000000\");",
+              "    });",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"catalogCursor\", page.pageInfo.endCursor);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  browseProducts(first: 3) {\n    totalCount\n    nodes {\n      id\n      title\n    }\n    pageInfo {\n      hasNextPage\n      endCursor\n    }\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The first page of browseProducts. Three products, ordered by title because the resolver supplies that order when the caller does not, and a cursor that the next request pages from.\n\nThe identifiers matter more than they look. `id` is produced by a resolver rather than read from a column, so the projection only selects the underlying key because the resolver declares `[Parent(\"Id\")]`. Without that declaration every product here answers with an all-zero Guid and the assertion below is what catches it."
+      },
+      "response": []
+    },
+    {
+      "name": "The next page, by cursor",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "pm.test(\"the second page carries on where the first stopped\", function () {",
+              "    const titles = body.data.browseProducts.nodes;",
+              "    pm.expect(titles).to.have.lengthOf(3);",
+              "    pm.expect(titles[0].title).to.eql(\"Canvas Storage Bin\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query NextPage($after: String) {\n  browseProducts(first: 3, after: $after) {\n    nodes {\n      title\n    }\n  }\n}",
+            "variables": "{\n  \"after\": \"{{catalogCursor}}\"\n}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The same field, paged from the cursor the previous request stored. The cursor carries the sort keys, so the database seeks straight to the position rather than counting rows it is going to throw away."
+      },
+      "response": []
+    },
+    {
+      "name": "Filtered and sorted",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const nodes = body.data.browseProducts.nodes;",
+              "",
+              "pm.test(\"the filter reached the database\", function () {",
+              "    pm.expect(nodes).to.have.lengthOf(2);",
+              "    nodes.forEach(function (node) {",
+              "        pm.expect(node.category).to.eql(\"LIGHTING\");",
+              "    });",
+              "});",
+              "",
+              "pm.test(\"the order argument won over the default\", function () {",
+              "    const titles = nodes.map(function (n) { return n.title; });",
+              "    const sorted = titles.slice().sort().reverse();",
+              "    pm.expect(titles).to.eql(sorted);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  browseProducts(\n    first: 2\n    where: { category: { eq: LIGHTING } }\n    order: [{ title: DESC }]\n  ) {\n    nodes {\n      title\n      category\n      averageRating\n    }\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The `where` and `order` arguments come from `[UseFiltering]` and `[UseSorting]`; both end up inside the one statement the resolver runs, along with a `LIMIT`. The `averageRating` beside them does not: it is a DataLoader-backed field of the Reviews domain, batched across the page's products."
       },
       "response": []
     }

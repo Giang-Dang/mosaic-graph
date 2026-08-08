@@ -13,11 +13,11 @@ public static partial class ProductPricingNode
 {
     /// <summary>What the product costs.</summary>
     public static async Task<Money> GetPriceAsync(
-        [Parent] Product product,
-        PricingService pricing,
+        [Parent("Id")] Product product,
+        IPriceByProductIdDataLoader priceByProductId,
         CancellationToken cancellationToken)
     {
-        var price = await pricing.GetPriceByProductIdAsync(product.Id, cancellationToken);
+        var price = await priceByProductId.LoadAsync(product.Id, cancellationToken);
 
         // The field is non-nullable because every catalogued product is priced.
         // If that ever stops being true it is a seed-data bug, not something a

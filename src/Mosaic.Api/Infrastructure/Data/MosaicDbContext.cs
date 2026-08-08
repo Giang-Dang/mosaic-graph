@@ -73,6 +73,18 @@ public sealed class MosaicDbContext(DbContextOptions<MosaicDbContext> options)
                 property.SetColumnName(ToSnakeCase(property.GetColumnName()));
             }
 
+            // Complex properties are not in GetProperties, and forgetting them
+            // is only visible in the SQL: Money's two columns arrive as
+            // "Amount_Amount" and "Amount_Currency", quoted, in the middle of
+            // an otherwise lower-case statement.
+            foreach (var complex in entity.GetComplexProperties())
+            {
+                foreach (var property in complex.ComplexType.GetProperties())
+                {
+                    property.SetColumnName(ToSnakeCase(property.GetColumnName()));
+                }
+            }
+
             foreach (var key in entity.GetKeys())
             {
                 key.SetName(ToSnakeCase(key.GetName()!));

@@ -1,3 +1,4 @@
+using GreenDonut.Data;
 using Microsoft.EntityFrameworkCore;
 using Mosaic.Api.Catalog.Model;
 using Mosaic.Api.Infrastructure;
@@ -60,5 +61,55 @@ public sealed class CatalogService(MosaicDbContext db, ServiceCallCounter counte
         return await db.Products
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.Sku == sku, cancellationToken);
+    }
+
+    /// <summary>
+    /// One page of the catalog, filtered and sorted as the caller asked, with
+    /// only the columns the caller's selection set actually needs.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Three arguments the resolver did not have to build. <c>PagingArguments</c>
+    /// carries <c>first</c>/<c>after</c>/<c>last</c>/<c>before</c>;
+    /// <c>QueryContext&lt;Product&gt;</c> carries a predicate built from the
+    /// <c>where</c> argument, a sort definition built from <c>order</c>, and a
+    /// selector built from the selection set. <c>With</c> applies all three in
+    /// the order that keeps the query cheap: filter, then sort, then project.
+    /// </para>
+    /// <para>
+    /// The default order is not decoration. Keyset pagination needs a total
+    /// order or the cursor cannot say where it points, so the tiebreaker on the
+    /// identifier is appended whether or not the caller sorted. <c>IfEmpty</c>
+    /// supplies the title ordering only when the caller did not ask for one.
+    /// </para>
+    /// </remarks>
+    public async Task<Page<Product>> BrowseProductsAsync(
+        PagingArguments pagingArguments,
+        QueryContext<Product>? query,
+        CancellationToken cancellationToken)
+    {
+        counter.RecordLookup();
+
+        return await db.Products
+            .AsNoTracking()
+            .With(query, DefaultOrder)
+            .ToPageAsync(pagingArguments, cancellationToken);
+    }
+
+    private static SortDefinition<Product> DefaultOrder(SortDefinition<Product> sort)
+        => sort.IfEmpty(order => order.AddAscending(p => p.Title))
+            .AddAscending(p => p.Id);
+
+    /// <summary>Several products by their identifiers, keyed for the caller.</summary>
+    public async Task<IReadOnlyDictionary<Guid, Product>> GetProductsByIdsAsync(
+        IReadOnlyList<Guid> ids,
+        CancellationToken cancellationToken)
+    {
+        counter.RecordLookup();
+
+        return await db.Products
+            .AsNoTracking()
+            .Where(p => ids.Contains(p.Id))
+            .ToDictionaryAsync(p => p.Id, cancellationToken);
     }
 }

@@ -25,4 +25,17 @@ public sealed class PricingService(MosaicDbContext db, ServiceCallCounter counte
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.ProductId == productId, cancellationToken);
     }
+
+    /// <summary>The prices of several products, keyed by product identifier.</summary>
+    public async Task<IReadOnlyDictionary<Guid, ProductPrice>> GetPricesByProductIdsAsync(
+        IReadOnlyList<Guid> productIds,
+        CancellationToken cancellationToken)
+    {
+        counter.RecordLookup();
+
+        return await db.Prices
+            .AsNoTracking()
+            .Where(p => productIds.Contains(p.ProductId))
+            .ToDictionaryAsync(p => p.ProductId, cancellationToken);
+    }
 }

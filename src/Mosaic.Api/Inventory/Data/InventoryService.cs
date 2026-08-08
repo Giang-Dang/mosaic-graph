@@ -29,4 +29,17 @@ public sealed class InventoryService(MosaicDbContext db, ServiceCallCounter coun
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.ProductId == productId, cancellationToken);
     }
+
+    /// <summary>The stock rows for several products, keyed by product identifier.</summary>
+    public async Task<IReadOnlyDictionary<Guid, StockLevel>> GetStockLevelsByProductIdsAsync(
+        IReadOnlyList<Guid> productIds,
+        CancellationToken cancellationToken)
+    {
+        counter.RecordLookup();
+
+        return await db.StockLevels
+            .AsNoTracking()
+            .Where(s => productIds.Contains(s.ProductId))
+            .ToDictionaryAsync(s => s.ProductId, cancellationToken);
+    }
 }

@@ -9,10 +9,10 @@ namespace Mosaic.Api.Accounts.Data;
 /// Everything the rest of Mosaic is allowed to ask the Accounts domain.
 /// </summary>
 /// <remarks>
-/// As in Catalog, nothing here accepts a list of identifiers. Reviews and
-/// Ordering each reach a customer one row at a time through
-/// <see cref="GetCustomerByIdAsync"/>. That omission is deliberate, and it is
-/// what a nested query against this schema is meant to expose.
+/// <see cref="GetCustomersByIdsAsync"/> is the one the DataLoader calls, and it
+/// is the only overload that exists because Reviews and Ordering ask about a
+/// customer more than once in the same request. The single-key method stays for
+/// the root field that really does want one.
 /// </remarks>
 public sealed class AccountsService(MosaicDbContext db, ServiceCallCounter counter)
 {
@@ -36,5 +36,21 @@ public sealed class AccountsService(MosaicDbContext db, ServiceCallCounter count
         return await db.Customers
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == id, cancellationToken);
+    }
+
+    /// <summary>
+    /// Several customers by their identifiers, keyed for a caller that has to
+    /// match them back up. A customer who is not there is simply absent.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<Guid, Customer>> GetCustomersByIdsAsync(
+        IReadOnlyList<Guid> ids,
+        CancellationToken cancellationToken)
+    {
+        counter.RecordLookup();
+
+        return await db.Customers
+            .AsNoTracking()
+            .Where(c => ids.Contains(c.Id))
+            .ToDictionaryAsync(c => c.Id, cancellationToken);
     }
 }

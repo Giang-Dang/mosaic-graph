@@ -16,16 +16,19 @@ public static partial class ReviewNode
 
     /// <summary>The customer who wrote the review.</summary>
     /// <remarks>
-    /// One customer, fetched one at a time, per review. Ask a product for its
-    /// reviews and every author on the page costs an Accounts lookup of its own.
-    /// The shape is deliberate and a later chapter is about fixing it.
+    /// This is the field that cost a hundred and twenty lookups until chapter
+    /// 4. It still runs a hundred and twenty times: the engine resolves one
+    /// author per review and nothing about that changed. What changed is that
+    /// each of those calls now hands a key to a DataLoader instead of asking
+    /// Accounts a question, and the hundred and twenty keys collapse to the
+    /// twelve distinct customers who wrote them.
     /// </remarks>
     public static async Task<Customer> GetAuthorAsync(
         [Parent] Review review,
-        AccountsService accounts,
+        ICustomerByIdDataLoader customerById,
         CancellationToken cancellationToken)
     {
-        var author = await accounts.GetCustomerByIdAsync(review.CustomerId, cancellationToken);
+        var author = await customerById.LoadAsync(review.CustomerId, cancellationToken);
 
         // The field is non-nullable because a review cannot exist without the
         // customer who wrote it. An author we cannot find is a seed-data bug,

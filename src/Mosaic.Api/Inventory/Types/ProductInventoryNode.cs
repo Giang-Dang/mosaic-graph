@@ -18,11 +18,11 @@ public static partial class ProductInventoryNode
     /// not something a storefront can render.
     /// </remarks>
     public static async Task<int> GetAvailableQuantityAsync(
-        [Parent] Product product,
-        InventoryService inventory,
+        [Parent("Id")] Product product,
+        IStockLevelByProductIdDataLoader stockLevelByProductId,
         CancellationToken cancellationToken)
     {
-        var stock = await inventory.GetStockLevelAsync(product.Id, cancellationToken);
+        var stock = await stockLevelByProductId.LoadAsync(product.Id, cancellationToken);
         return stock?.AvailableQuantity ?? 0;
     }
 }

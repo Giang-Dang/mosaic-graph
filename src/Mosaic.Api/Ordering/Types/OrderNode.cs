@@ -18,17 +18,18 @@ public static partial class OrderNode
 
     /// <summary>The customer who placed the order.</summary>
     /// <remarks>
-    /// One Accounts lookup per order, every time. Ask for ten orders and
-    /// Accounts is asked ten questions, even when nine of them are about the
-    /// same customer. That is the shape this chapter is here to show; the fix
-    /// comes later and does not change this field's signature.
+    /// It is the same DataLoader <c>Review.author</c> uses, and that is worth
+    /// noticing rather than glossing over. One instance per request means one
+    /// cache per request, so a query that reaches a customer through their
+    /// orders and again through their reviews fetches them once and hands both
+    /// fields the same object.
     /// </remarks>
     public static async Task<Customer> GetCustomerAsync(
         [Parent] Order order,
-        AccountsService accounts,
+        ICustomerByIdDataLoader customerById,
         CancellationToken cancellationToken)
     {
-        var customer = await accounts.GetCustomerByIdAsync(order.CustomerId, cancellationToken);
+        var customer = await customerById.LoadAsync(order.CustomerId, cancellationToken);
 
         // The field is non-nullable because an order cannot exist without the
         // customer who placed it. A missing one is a seed-data bug, not

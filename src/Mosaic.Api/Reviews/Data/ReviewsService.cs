@@ -9,11 +9,12 @@ namespace Mosaic.Api.Reviews.Data;
 /// Everything the rest of Mosaic is allowed to ask the Reviews domain.
 /// </summary>
 /// <remarks>
-/// One product identifier in, one answer out, as in every other domain here.
-/// Nothing on this class takes a list of identifiers, so a query that walks a
-/// page of products asks Reviews about each of them separately. Behind a list
-/// in memory that cost nothing; behind PostgreSQL it is one statement, one
-/// network round trip and one query plan per product.
+/// Two shapes of the same two questions. The single-key methods are the ones
+/// chapters 2 and 3 measured, and they are still here because a root field that
+/// genuinely wants one product's reviews should not have to pretend it wants
+/// many. The list-taking methods below them are what the DataLoaders call, and
+/// they are the only reason a page of twenty-five products costs one statement
+/// rather than twenty-five.
 /// </remarks>
 public sealed class ReviewsService(MosaicDbContext db, ServiceCallCounter counter)
 {
@@ -58,5 +59,65 @@ public sealed class ReviewsService(MosaicDbContext db, ServiceCallCounter counte
             .Where(r => r.ProductId == productId)
             .Select(r => (double?)r.Rating)
             .AverageAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Every review written about any of several products, grouped by product
+    /// and oldest first inside each group.
+    /// </summary>
+    /// <remarks>
+    /// One statement, whatever the number of keys: <c>Contains</c> over a list
+    /// becomes <c>WHERE product_id = ANY(@keys)</c> against PostgreSQL, which
+    /// is a single parameter rather than one per key, so the plan is reusable
+    /// no matter how many products the page holds.
+    /// <para>
+    /// The grouping happens in memory, on rows that have already arrived. Doing
+    /// it in SQL would mean a <c>GROUP BY</c> that has to aggregate the review
+    /// bodies into arrays, which is more work for the database and no less for
+    /// the process.
+    /// </para>
+    /// </remarks>
+    public async Task<ILookup<Guid, Review>> GetReviewsByProductIdsAsync(
+        IReadOnlyList<Guid> productIds,
+        CancellationToken cancellationToken)
+    {
+        counter.RecordLookup();
+
+        var reviews = await db.Reviews
+            .AsNoTracking()
+            .Where(r => productIds.Contains(r.ProductId))
+            .OrderBy(r => r.CreatedAt)
+            .ThenBy(r => r.Id)
+            .ToListAsync(cancellationToken);
+
+        return reviews.ToLookup(r => r.ProductId);
+    }
+
+    /// <summary>
+    /// The mean rating for each of several products. A product with no reviews
+    /// is absent from the dictionary rather than present with a zero.
+    /// </summary>
+    /// <remarks>
+    /// The average is computed by PostgreSQL, one row per product, so the 120
+    /// review rows never cross the wire at all.
+    /// </remarks>
+    public async Task<IReadOnlyDictionary<Guid, double?>> GetAverageRatingsByProductIdsAsync(
+        IReadOnlyList<Guid> productIds,
+        CancellationToken cancellationToken)
+    {
+        counter.RecordLookup();
+
+        var averages = await db.Reviews
+            .AsNoTracking()
+            .Where(r => productIds.Contains(r.ProductId))
+            .GroupBy(r => r.ProductId)
+            .Select(group => new
+            {
+                ProductId = group.Key,
+                Average = group.Average(r => (double?)r.Rating)
+            })
+            .ToListAsync(cancellationToken);
+
+        return averages.ToDictionary(a => a.ProductId, a => a.Average);
     }
 }

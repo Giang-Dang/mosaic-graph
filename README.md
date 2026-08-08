@@ -20,6 +20,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | `ch02` | 2. HotChocolate, Quickly | One service, six domain folders, in-memory data |
 | `ch03` | 3. The Life of a Request | The same service, instrumented: pipeline report, per-request timeline, resolver-scope sample |
 | `ch04-ef` | 4. Data Without the N+1, halfway | The same schema on PostgreSQL through EF Core. Still 146 lookups, and now 146 round trips |
+| `ch04` | 4. Data Without the N+1 | DataLoaders behind the same resolvers: 146 resolvers, 3 round trips. Plus `browseProducts`, paged, filtered, sorted and projected |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -118,6 +119,10 @@ postman/                 collection and environment
 scripts/                 verify.ps1 and verify.sh
 ```
 
+Each domain's `Data/` folder holds everything that domain knows about storage:
+its service, its DataLoaders, its `IEntityTypeConfiguration` and its seed rows.
+`MosaicDbContext` collects those configurations and owns no mapping of its own.
+
 Every field lives in the folder of the domain that owns it, including fields on
 types another domain defined. `Product` is a Catalog record, but `Product.price`
 is a resolver in `Pricing/Types/` and `Product.reviews` is one in
@@ -140,6 +145,19 @@ Against a `List<T>` in memory nobody noticed, which is exactly why this pattern
 reaches production. At tag `ch04-ef` the same 146 lookups are 146 statements
 against PostgreSQL, and the request timeline reports both numbers.
 
+At tag `ch04` the resolvers are unchanged in shape and the log says:
+
+```
+Service lookups this request: 3
+```
+
+The engine still runs 146 resolvers. Each one now hands a key to a DataLoader
+instead of asking a domain service a question, and the keys are gathered into
+three statements: the products, their reviews, and the twelve distinct customers
+who wrote those reviews. Only the batch fetches count as lookups, so the two
+numbers that used to agree no longer do, and the gap between them is the
+chapter.
+
 ## Watching a request go through
 
 From tag `ch03` the service reports what the execution engine did with it. At
@@ -156,7 +174,7 @@ and every request logs a timeline:
 
 ```
 parse - validate 0.204ms compile 0.097ms coerce - execute 0.492ms total 0.931ms
-    (document cache miss, operation cache miss, 146 resolvers, 146 SQL)
+    (document cache miss, operation cache miss, 146 resolvers, 3 SQL)
 ```
 
 Send the same query twice and the second one reports both caches hitting, with
@@ -164,13 +182,14 @@ validation and compilation skipped entirely. `parse` never fires over HTTP: the
 transport parses the document before the execution pipeline runs, which is also
 why a syntax error never produces a timeline line at all.
 
-The resolver count matches the lookup count because every resolver here does
-exactly one domain-service lookup. Plain record properties - `title`, `rating`,
-`displayName` - are not resolvers and never appear in it.
+Plain record properties - `title`, `rating`, `displayName` - are not resolvers
+and never appear in the resolver count. Through chapters 2 and 3 that count
+matched the lookup count exactly, because every resolver did one lookup.
 
 The last field arrived with chapter 4 and is the one worth watching. It counts
 the commands Entity Framework Core actually sent, measured by an interceptor on
-the command rather than inferred from anything above it.
+the command rather than inferred from anything above it. Watching 146 and 3 sit
+on the same line is the whole point of the exercise.
 
 To see what `[UseRequestScope]` changes:
 

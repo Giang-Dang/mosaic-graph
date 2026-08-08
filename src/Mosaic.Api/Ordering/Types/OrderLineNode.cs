@@ -12,17 +12,12 @@ namespace Mosaic.Api.Ordering.Types;
 public static partial class OrderLineNode
 {
     /// <summary>The product this line sold.</summary>
-    /// <remarks>
-    /// One Catalog lookup per line, every time, and the lines of one order are
-    /// already several. Nest this under a customer's orders and the count grows
-    /// the way this chapter says it does. Leave it alone; it gets fixed later.
-    /// </remarks>
     public static async Task<Product> GetProductAsync(
         [Parent] OrderLine line,
-        CatalogService catalog,
+        IProductByIdDataLoader productById,
         CancellationToken cancellationToken)
     {
-        var product = await catalog.GetProductByIdAsync(line.ProductId, cancellationToken);
+        var product = await productById.LoadAsync(line.ProductId, cancellationToken);
 
         // Non-nullable for the same reason as Order.customer: a line that sold
         // a product Catalog has never heard of is a seed-data bug.

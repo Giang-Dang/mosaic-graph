@@ -44,6 +44,14 @@ builder.AddGraphQL()
     // a MosaicDbContext parameter. AddMosaicDatabase above is what registers
     // the factory itself; without it this line compiles and fails at runtime.
     .RegisterDbContextFactory<MosaicDbContext>()
+    // The where and order arguments on browseProducts. Between them these two
+    // also register QueryContext<T>, which is what carries the projection, so
+    // there is no separate AddProjections() call.
+    .AddFiltering()
+    .AddSorting()
+    // first / after / last / before, and the PagingArguments parameter that
+    // hands them to a resolver.
+    .AddPagingArguments()
     // A diagnostic listener is built from the schema service provider, which
     // does not inherit the application's registrations. Drop the next line and
     // startup fails with "Unable to resolve service for type

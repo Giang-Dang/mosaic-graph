@@ -76,25 +76,27 @@ $SampleApproaches = [ordered] @{
     'schema-first'         = 'Mosaic.Sample.SchemaFirst'
 }
 
-# The chapter's query and the numbers it produces. The lookup count is the point
-# of the exercise: one lookup for the product list, one per product for its
-# reviews, one per review for its author. 1 + 25 + 120 = 146. A later chapter
-# fixes that; until then a change in this number means the shape of the naive
-# version has changed and the prose is wrong.
+# The chapter's query and the numbers it produces.
+#
+# The lookup count was the point of the exercise for two chapters: one lookup
+# for the product list, one per product for its reviews, one per review for its
+# author, 1 + 25 + 120 = 146. Chapter 4's DataLoaders make it 3. The resolver
+# count stays at 146, because the engine still runs every one of those
+# resolvers; what changed is what a resolver does when it gets there.
 $VerifyQuery          = '{ products { title reviews { rating author { displayName } } } }'
 $ExpectedProductCount = 25
 $ExpectedReviewCount  = 120
-$ExpectedLookupCount  = 146
+$ExpectedLookupCount  = 3
 
 # What the same query costs the database. Until chapter 4 this could only be
 # guessed at from the lookup count; now an EF Core command interceptor counts
 # the statements that actually reach PostgreSQL, and the timeline reports it.
 #
-# At tag ch04-ef the two numbers are equal, because every single-key lookup is
-# one statement. At tag ch04 the DataLoaders make this 3 while the lookup count
-# stays 146: the resolvers still ask 146 questions, and the answers arrive in
-# three round trips.
-$ExpectedSqlCommandCount = 146
+# At tag ch04-ef this was 146, equal to the lookup count, because every
+# single-key lookup was one statement. The DataLoaders make it 3: the products,
+# their reviews in one batch, and the twelve distinct authors of those reviews
+# in another.
+$ExpectedSqlCommandCount = 3
 
 # The request pipeline HotChocolate assembles for this service, in order. Twelve
 # of these come from the default pipeline; CostAnalyzerMiddleware is inserted
@@ -613,10 +615,10 @@ try {
             "Expected the service to log 'Service lookups this request: $ExpectedLookupCount'."
             "It logged: $($loggedCounts -join ', ')."
             ''
-            "That number is quoted in the book: 1 lookup for the product list, $ExpectedProductCount for"
-            "their reviews, $ExpectedReviewCount for the review authors. If it moved, either the seed data"
-            'or the resolvers changed and the chapter needs rewriting - or someone'
-            'fixed the N+1 early.'))
+            'That number is quoted in the book: one lookup for the product list, one'
+            'for every review on it, and one for their authors. It was 146 through'
+            'chapters 2 and 3 and at tag ch04-ef. If it moved, either a DataLoader'
+            'stopped batching or a resolver went back to asking a service directly.'))
     }
     Write-Ok "service logged 'Service lookups this request: $ExpectedLookupCount'"
 
