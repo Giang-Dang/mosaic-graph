@@ -18,6 +18,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | Tag | Chapter | State |
 |-----|---------|-------|
 | `ch02` | 2. HotChocolate, Quickly | One service, six domain folders, in-memory data |
+| `ch03` | 3. The Life of a Request | The same service, instrumented: pipeline report, per-request timeline, resolver-scope sample |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -89,7 +90,9 @@ src/Mosaic.Api/          the service; one folder per domain
   Accounts/              who the customers are
   Ordering/              what they bought
   Infrastructure/        the lookup counter and its options
+    Diagnostics/         the pipeline report and the per-request timeline
 samples/three-approaches/  the same tiny schema, three authoring styles
+samples/resolver-scopes/   what [UseRequestScope] changes, in two fields
 schema/                  committed SDL snapshots
 postman/                 collection and environment
 scripts/                 verify.ps1 and verify.sh
@@ -114,3 +117,41 @@ for its author. The domain services take a single key and have no batch
 overload, deliberately. Against a `List<T>` in memory nobody notices, which is
 exactly why this pattern reaches production. Chapter 4 replaces the data layer
 and brings that number down.
+
+## Watching a request go through
+
+From tag `ch03` the service reports what the execution engine did with it. At
+startup it logs the request pipeline it assembled:
+
+```
+Request pipeline: 13 middleware
+  1. InstrumentationMiddleware
+  ...
+  13. OperationExecutionMiddleware
+```
+
+and every request logs a timeline:
+
+```
+parse - validate 0.204ms compile 0.097ms coerce - execute 0.492ms total 0.931ms
+    (document cache miss, operation cache miss, 146 resolvers)
+```
+
+Send the same query twice and the second one reports both caches hitting, with
+validation and compilation skipped entirely. `parse` never fires over HTTP: the
+transport parses the document before the execution pipeline runs, which is also
+why a syntax error never produces a timeline line at all.
+
+The resolver count matches the lookup count because every resolver here does
+exactly one domain-service lookup. Plain record properties - `title`, `rating`,
+`displayName` - are not resolvers and never appear in it.
+
+To see what `[UseRequestScope]` changes:
+
+```
+dotnet run --project samples/resolver-scopes
+```
+
+then ask for two default-scope fields and two request-scope ones in a single
+query. The default ones each get their own service scope; the annotated ones
+share the request's.

@@ -73,6 +73,33 @@ $ExpectedProductCount = 25
 $ExpectedReviewCount  = 120
 $ExpectedLookupCount  = 146
 
+# The request pipeline HotChocolate assembles for this service, in order. Twelve
+# of these come from the default pipeline; CostAnalyzerMiddleware is inserted
+# after DocumentValidationMiddleware by the cost analyzer that AddGraphQLServer
+# turns on unless default security is disabled. Chapter 3 prints this list, so a
+# change here is a change to the chapter.
+$ExpectedPipeline = @(
+    'InstrumentationMiddleware'
+    'ExceptionMiddleware'
+    'TimeoutMiddleware'
+    'DocumentCacheMiddleware'
+    'DocumentParserMiddleware'
+    'DocumentValidationMiddleware'
+    'CostAnalyzerMiddleware'
+    'OperationCacheMiddleware'
+    'OperationResolverMiddleware'
+    'SkipWarmupExecutionMiddleware'
+    'OperationVariableCoercionMiddleware'
+    'ConcurrencyGateMiddleware'
+    'OperationExecutionMiddleware'
+)
+
+# Every resolver the engine runs for $VerifyQuery does exactly one
+# domain-service lookup, so this matches $ExpectedLookupCount. Plain record
+# properties - title, rating, displayName - are not resolvers and are not
+# counted.
+$ExpectedResolverCount = 146
+
 # ---------------------------------------------------------------------------
 # Step reporting
 # ---------------------------------------------------------------------------
@@ -544,6 +571,81 @@ try {
             'fixed the N+1 early.'))
     }
     Write-Ok "service logged 'Service lookups this request: $ExpectedLookupCount'"
+
+    # -- 6b. the request pipeline ------------------------------------------
+
+    # The pipeline is logged once, while the schema is being built, so by the
+    # time a query has been answered these lines are already there.
+    $logText = Get-LogText $apiStdout
+
+    $loggedPipeline = @(
+        [regex]::Matches($logText, '(?m)^\s+\d+\. (\S+)\s*$') |
+            ForEach-Object { $_.Groups[1].Value })
+
+    if ($loggedPipeline.Count -eq 0) {
+        Stop-Verify 'request pipeline' (Join-Lines @(
+            'The service never logged its request pipeline.'
+            'AddPipelineReport() is what writes it; check it is still registered'
+            'in Program.cs, and registered after AddGraphQL().'
+            ''
+            (Get-LogTail $apiStdout)))
+    }
+
+    if ($loggedPipeline.Count -ne $ExpectedPipeline.Count) {
+        Stop-Verify 'request pipeline' (Join-Lines @(
+            "Expected $($ExpectedPipeline.Count) middleware in the pipeline, found $($loggedPipeline.Count)."
+            "Found: $($loggedPipeline -join ', ')."
+            ''
+            'Chapter 3 prints this list and counts it. If HotChocolate changed the'
+            'default pipeline, the chapter needs rewriting, not this assertion.'))
+    }
+
+    for ($i = 0; $i -lt $ExpectedPipeline.Count; $i++) {
+        if ($loggedPipeline[$i] -ne $ExpectedPipeline[$i]) {
+            Stop-Verify 'request pipeline' (Join-Lines @(
+                "Middleware $($i + 1) should be $($ExpectedPipeline[$i]) but was $($loggedPipeline[$i])."
+                "Full pipeline: $($loggedPipeline -join ', ')."
+                ''
+                'The order is the spine of chapter 3. Do not reorder it to make'
+                'this pass; work out what moved and why.'))
+        }
+    }
+    Write-Ok "request pipeline is the expected $($ExpectedPipeline.Count) middleware, in order"
+
+    # -- 6c. the request timeline ------------------------------------------
+
+    $timelineDeadline = (Get-Date).AddSeconds(15)
+    $loggedResolvers = @()
+    while ((Get-Date) -lt $timelineDeadline) {
+        $loggedResolvers = @(
+            [regex]::Matches((Get-LogText $apiStdout), '(\d+) resolvers\)') |
+                ForEach-Object { $_.Groups[1].Value })
+        if ($loggedResolvers.Count -gt 0) {
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
+    if ($loggedResolvers.Count -eq 0) {
+        Stop-Verify 'request timeline' (Join-Lines @(
+            'The service never logged a request timeline.'
+            'RequestTimelineListener is what writes it. It is registered through'
+            'AddDiagnosticEventListener, and it needs AddApplicationService<ILoggerFactory>()'
+            'alongside it or the schema will not build at all.'
+            ''
+            (Get-LogTail $apiStdout)))
+    }
+
+    if ($loggedResolvers -notcontains "$ExpectedResolverCount") {
+        Stop-Verify 'request timeline' (Join-Lines @(
+            "Expected the timeline to report $ExpectedResolverCount resolvers for the query."
+            "It reported: $($loggedResolvers -join ', ')."
+            ''
+            'Chapter 3 makes a point of this matching the lookup count exactly:'
+            'every resolver the engine runs does one domain-service lookup, and'
+            'the plain record properties are not resolvers at all.'))
+    }
+    Write-Ok "request timeline reported $ExpectedResolverCount resolvers"
 
     # -- 7. the postman collection -----------------------------------------
 

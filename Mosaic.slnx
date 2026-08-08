@@ -6,5 +6,6 @@
     <Project Path="samples/three-approaches/Mosaic.Sample.ImplementationFirst/Mosaic.Sample.ImplementationFirst.csproj" />
     <Project Path="samples/three-approaches/Mosaic.Sample.CodeFirst/Mosaic.Sample.CodeFirst.csproj" />
     <Project Path="samples/three-approaches/Mosaic.Sample.SchemaFirst/Mosaic.Sample.SchemaFirst.csproj" />
+    <Project Path="samples/resolver-scopes/Mosaic.Sample.ResolverScopes.csproj" />
   </Folder>
 </Solution>
