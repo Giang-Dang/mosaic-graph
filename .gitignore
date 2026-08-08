@@ -12,4 +12,4 @@ TestResults/
 
 # `dotnet run -- schema export` writes this next to the SDL; the SDL is the
 # artifact we track, the settings dump is not.
-schema/*-settings.json
+*-settings.json

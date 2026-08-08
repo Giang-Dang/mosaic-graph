@@ -2,4 +2,9 @@
   <Folder Name="/src/">
     <Project Path="src/Mosaic.Api/Mosaic.Api.csproj" />
   </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/three-approaches/Mosaic.Sample.ImplementationFirst/Mosaic.Sample.ImplementationFirst.csproj" />
+    <Project Path="samples/three-approaches/Mosaic.Sample.CodeFirst/Mosaic.Sample.CodeFirst.csproj" />
+    <Project Path="samples/three-approaches/Mosaic.Sample.SchemaFirst/Mosaic.Sample.SchemaFirst.csproj" />
+  </Folder>
 </Solution>

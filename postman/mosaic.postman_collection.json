@@ -1,0 +1,306 @@
+{
+	"info": {
+		"_postman_id": "6f1c2a90-3f4c-4f7a-9a1e-2b7d5c8e4a11",
+		"name": "Mosaic - chapter 02",
+		"description": "The development loop for Mosaic's single service, as chapter 2 of Federated GraphQL on .NET builds it.\n\nPoint the `baseUrl` environment variable at a running service (`dotnet run --project src/Mosaic.Api`, or `docker compose up`) and run the collection. Every request carries an assertion, so `newman run` is a smoke test as well as a demonstration.\n\nIntrospection only answers when the service runs in the Development environment. HotChocolate 16 disables it everywhere else by default.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Every product",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"no GraphQL errors\", function () {",
+							"    pm.expect(body).to.not.have.property(\"errors\");",
+							"});",
+							"",
+							"pm.test(\"the seeded catalog holds 25 products\", function () {",
+							"    pm.expect(body.data.products).to.have.lengthOf(25);",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  products {\n    id\n    sku\n    title\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/graphql",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "The smallest useful query. If this fails, nothing else in the collection is worth reading."
+			},
+			"response": []
+		},
+		{
+			"name": "A product page",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"no GraphQL errors\", function () {",
+							"    pm.expect(body).to.not.have.property(\"errors\");",
+							"});",
+							"",
+							"const product = body.data.productById;",
+							"",
+							"pm.test(\"Catalog answered\", function () {",
+							"    pm.expect(product.sku).to.eql(\"MOS-FRN-0001\");",
+							"    pm.expect(product.title).to.be.a(\"string\");",
+							"});",
+							"",
+							"pm.test(\"Pricing answered\", function () {",
+							"    pm.expect(product.price.amount).to.be.a(\"number\");",
+							"    pm.expect(product.price.currency).to.eql(\"EUR\");",
+							"});",
+							"",
+							"pm.test(\"Inventory answered\", function () {",
+							"    pm.expect(product.availableQuantity).to.be.a(\"number\");",
+							"});",
+							"",
+							"pm.test(\"Reviews answered, and reached into Accounts for each author\", function () {",
+							"    pm.expect(product.reviews).to.be.an(\"array\").that.is.not.empty;",
+							"    pm.expect(product.reviews[0].author.displayName).to.be.a(\"string\");",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "query ProductPage($id: ID!) {\n  productById(id: $id) {\n    id\n    sku\n    title\n    description\n    category\n    price {\n      amount\n      currency\n    }\n    availableQuantity\n    averageRating\n    reviews {\n      rating\n      body\n      createdAt\n      author {\n        displayName\n      }\n    }\n  }\n}",
+						"variables": "{\n  \"id\": \"a0000000-0000-4000-8000-000000000001\"\n}"
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/graphql",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "One request assembled from four domains: Catalog owns the identity, Pricing the price, Inventory the stock, Reviews the opinions, and Reviews in turn asks Accounts who wrote each one. This is the query chapter 1 promised and the one the whole book pulls apart.\n\nWatch the service log while this runs. The lookup count it prints is the honest cost of doing it this way."
+			},
+			"response": []
+		},
+		{
+			"name": "One product, by variable",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"no GraphQL errors\", function () {",
+							"    pm.expect(body).to.not.have.property(\"errors\");",
+							"});",
+							"",
+							"pm.test(\"the variable selected the product we asked for\", function () {",
+							"    pm.expect(body.data.productBySku.sku).to.eql(\"MOS-KIT-0001\");",
+							"    pm.expect(body.data.productBySku.title).to.eql(\"Ridge Chef's Knife\");",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "query BySku($sku: String!) {\n  productBySku(sku: $sku) {\n    id\n    sku\n    title\n    price {\n      amount\n      currency\n    }\n  }\n}",
+						"variables": "{\n  \"sku\": \"MOS-KIT-0001\"\n}"
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/graphql",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "The same document, reused with a different variable. Editing the Variables pane rather than the query is the habit worth forming: the document stays constant, which is what makes persisted operations possible later."
+			},
+			"response": []
+		},
+		{
+			"name": "A field that does not exist",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"rejected before execution with 400\", function () {",
+							"    pm.response.to.have.status(400);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"the error names the field and the type\", function () {",
+							"    pm.expect(body.errors).to.be.an(\"array\").that.is.not.empty;",
+							"    pm.expect(body.errors[0].message).to.include(\"nope\");",
+							"    pm.expect(body.errors[0].extensions.type).to.eql(\"Product\");",
+							"    pm.expect(body.errors[0].extensions.field).to.eql(\"nope\");",
+							"});",
+							"",
+							"pm.test(\"nothing was resolved\", function () {",
+							"    pm.expect(body).to.not.have.property(\"data\");",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  products {\n    nope\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/graphql",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "A deliberate mistake, kept in the collection because the failure is worth seeing. Validation runs against the schema before a single resolver is called, so no data comes back at all, and the error points at the GraphQL specification rather than carrying a HotChocolate error code."
+			},
+			"response": []
+		},
+		{
+			"name": "Introspection",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"introspection is answering\", function () {",
+							"    pm.expect(body.data.__schema.queryType.name).to.eql(\"Query\");",
+							"});",
+							"",
+							"pm.test(\"the schema carries the types chapter 2 built\", function () {",
+							"    const names = body.data.__schema.types.map(function (t) { return t.name; });",
+							"    [\"Product\", \"Money\", \"Review\", \"Customer\", \"Order\", \"OrderLine\"].forEach(function (n) {",
+							"        pm.expect(names).to.include(n);",
+							"    });",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  __schema {\n    queryType {\n      name\n    }\n    types {\n      name\n    }\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/graphql",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "The query Postman itself runs when it fetches a schema, written out by hand so you can see what the tooling is doing.\n\nThis is also the request that fails first when the service is not running in Development: HotChocolate 16 disables introspection outside it by default, and the answer becomes an HC0046 error rather than a schema."
+			},
+			"response": []
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:5100",
+			"type": "string"
+		}
+	]
+}

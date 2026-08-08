@@ -1,0 +1,548 @@
+#!/usr/bin/env bash
+#
+# Verifies the Mosaic sample service end to end.
+#
+# This is the gate that has to pass before a chapter tag is cut, and it is the
+# script a reader runs to check that the code in the book still does what the
+# book says it does. It builds the solution, checks the committed schema
+# snapshot against a freshly exported one, starts the service, runs the
+# chapter's query and asserts the three numbers the chapter quotes.
+#
+# scripts/verify.ps1 is the same script for readers on Windows. Changes to one
+# belong in the other.
+#
+# Usage: bash scripts/verify.sh
+#
+# There is no `set -e` on purpose: every command that matters has its exit code
+# checked by hand, right where the failure message is written.
+
+set -u
+
+PORT="${MOSAIC_PORT:-5100}"
+STARTUP_TIMEOUT_SECONDS="${MOSAIC_STARTUP_TIMEOUT:-60}"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+SOLUTION="$REPO_ROOT/Mosaic.slnx"
+API_PROJECT="$REPO_ROOT/src/Mosaic.Api/Mosaic.Api.csproj"
+COMMITTED_SCHEMA="$REPO_ROOT/schema/mosaic.graphql"
+SAMPLES_DIR="$REPO_ROOT/samples/three-approaches"
+SAMPLE_SCHEMA_DIR="$REPO_ROOT/schema/samples"
+POSTMAN_COLLECTION="$REPO_ROOT/postman/mosaic.postman_collection.json"
+POSTMAN_ENVIRONMENT="$REPO_ROOT/postman/mosaic.local.postman_environment.json"
+BASE_URL="http://localhost:$PORT"
+
+# The three sample projects, in the order the chapter introduces them, written as
+# <name committed under schema/samples>:<folder under samples/three-approaches>.
+# All three describe the same schema three different ways, so all three must
+# export exactly the same SDL.
+SAMPLE_APPROACHES="implementation-first:Mosaic.Sample.ImplementationFirst
+code-first:Mosaic.Sample.CodeFirst
+schema-first:Mosaic.Sample.SchemaFirst"
+
+# The chapter's query and the numbers it produces. The lookup count is the point
+# of the exercise: one lookup for the product list, one per product for its
+# reviews, one per review for its author. 1 + 25 + 120 = 146. A later chapter
+# fixes that; until then a change in this number means the shape of the naive
+# version has changed and the prose is wrong.
+VERIFY_QUERY='{ products { title reviews { rating author { displayName } } } }'
+EXPECTED_PRODUCT_COUNT=25
+EXPECTED_REVIEW_COUNT=120
+EXPECTED_LOOKUP_COUNT=146
+
+API_PID=""
+TEMP_DIR=""
+API_LOG=""
+SUMMARY=""
+JSON_TOOL=""
+
+# ---------------------------------------------------------------------------
+# Step reporting
+# ---------------------------------------------------------------------------
+
+step_ok() {
+    printf '[ok]   %s\n' "$1"
+    SUMMARY="${SUMMARY}[ok]   $1"$'\n'
+}
+
+step_skip() {
+    printf '[skip] %s - %s\n' "$1" "$2"
+    SUMMARY="${SUMMARY}[skip] $1 - $2"$'\n'
+}
+
+# Prints the failure, records it, and exits. The EXIT trap stops the service and
+# prints the summary; nothing after a failed step is worth running.
+step_fail() {
+    printf '[FAIL] %s\n' "$1"
+    if [ -n "${2:-}" ]; then
+        printf '%s\n' "$2"
+    fi
+    SUMMARY="${SUMMARY}[FAIL] $1"$'\n'
+    exit 1
+}
+
+require_command() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        step_fail "$2" "$1 is not on PATH. $3"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Schemas are compared by content, not byte for byte. The exporter writes CRLF on
+# Windows and LF everywhere else, while .gitattributes stores the committed copy
+# with LF, so a byte comparison would fail on Windows every time for a difference
+# nobody cares about. Line endings and trailing blank lines are normalised away;
+# everything else is compared exactly.
+normalise_file() {
+    printf '%s\n' "$(tr -d '\r' < "$1")" > "$2"
+}
+
+same_text() {
+    normalise_file "$1" "$TEMP_DIR/compare.a"
+    normalise_file "$2" "$TEMP_DIR/compare.b"
+    cmp -s "$TEMP_DIR/compare.a" "$TEMP_DIR/compare.b"
+}
+
+# $1 expected file, $2 actual file, $3 label used for the temporary copies.
+# The subshell cd is only there to keep the file names in the diff header short.
+schema_diff() {
+    normalise_file "$1" "$TEMP_DIR/$3.expected.graphql"
+    normalise_file "$2" "$TEMP_DIR/$3.actual.graphql"
+    ( cd "$TEMP_DIR" && diff -u "$3.expected.graphql" "$3.actual.graphql" ) || true
+}
+
+# True only when something answers on the port. curl exits 7 when the connection
+# is refused and 28 when it times out; neither is a running service. Timeouts
+# count as free deliberately, because some machines drop the connection instead
+# of refusing it, and reading that as "port taken" would block every run. The
+# cost of being wrong is small: the service then fails to bind, and the health
+# poll below reports that with the service's own error in the message.
+port_in_use() {
+    local rc
+    curl -s -o /dev/null --connect-timeout 1 --max-time 2 "http://127.0.0.1:${PORT}/" >/dev/null 2>&1
+    rc=$?
+    case "$rc" in
+        7 | 28) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# Prints "<has_errors> <product_count> <review_count>", tab separated. jq is the
+# obvious tool; python3 is there for the machine that does not have it.
+summarise_response() {
+    if [ "$JSON_TOOL" = "jq" ]; then
+        jq -r '[
+            (if has("errors") then 1 else 0 end),
+            ((.data.products // []) | length),
+            ([ (.data.products // [])[] | (.reviews // []) | length ] | add // 0)
+        ] | @tsv' "$1"
+        return $?
+    fi
+
+    python3 - "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+data = payload.get("data") or {}
+products = data.get("products") or []
+reviews = sum(len(product.get("reviews") or []) for product in products)
+
+print("%d\t%d\t%d" % (1 if "errors" in payload else 0, len(products), reviews))
+PY
+}
+
+log_tail() {
+    if [ -n "$API_LOG" ] && [ -f "$API_LOG" ]; then
+        tail -n 40 "$API_LOG"
+    else
+        printf '(the service printed nothing)\n'
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Cleanup: runs whatever happened above
+# ---------------------------------------------------------------------------
+
+stop_api() {
+    if [ -z "$API_PID" ]; then
+        return 0
+    fi
+    if ! kill -0 "$API_PID" 2>/dev/null; then
+        API_PID=""
+        return 0
+    fi
+
+    # dotnet run launches the application as a child process, so the children go
+    # first. Killing only the process we started leaves the app holding the port.
+    if command -v pkill >/dev/null 2>&1; then
+        pkill -TERM -P "$API_PID" >/dev/null 2>&1 || true
+    fi
+    kill -TERM "$API_PID" >/dev/null 2>&1 || true
+
+    waited=0
+    while [ "$waited" -lt 100 ] && kill -0 "$API_PID" 2>/dev/null; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+
+    if kill -0 "$API_PID" 2>/dev/null; then
+        if command -v pkill >/dev/null 2>&1; then
+            pkill -KILL -P "$API_PID" >/dev/null 2>&1 || true
+        fi
+        kill -KILL "$API_PID" >/dev/null 2>&1 || true
+    fi
+
+    wait "$API_PID" 2>/dev/null || true
+    API_PID=""
+
+    # The port has to be free when we leave, whatever happened above.
+    waited=0
+    while [ "$waited" -lt 40 ] && port_in_use; do
+        sleep 0.25
+        waited=$((waited + 1))
+    done
+    if port_in_use; then
+        printf 'Warning: something is still listening on port %s after the service was stopped.\n' "$PORT" >&2
+    fi
+}
+
+cleanup() {
+    status=$?
+
+    stop_api
+
+    if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
+    fi
+
+    printf '\n--- summary ---\n'
+    printf '%s' "$SUMMARY"
+    if [ "$status" -eq 0 ]; then
+        printf 'PASS\n'
+    else
+        printf 'FAIL\n'
+    fi
+
+    exit "$status"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# ---------------------------------------------------------------------------
+# Verification
+# ---------------------------------------------------------------------------
+
+printf 'mosaic verify - %s\n\n' "$REPO_ROOT"
+
+# -- 1. the SDK -------------------------------------------------------------
+
+require_command dotnet 'dotnet sdk' 'Install the .NET SDK version pinned in global.json.'
+require_command curl 'prerequisites' 'It is needed to talk to the service.'
+require_command diff 'prerequisites' 'It is needed to show schema differences.'
+
+if command -v jq >/dev/null 2>&1; then
+    JSON_TOOL="jq"
+elif command -v python3 >/dev/null 2>&1; then
+    JSON_TOOL="python3"
+else
+    step_fail 'prerequisites' 'Neither jq nor python3 is on PATH; one of them is needed to read the GraphQL response.'
+fi
+
+SDK_VERSION="$(dotnet --version 2>&1)"
+if [ $? -ne 0 ]; then
+    step_fail 'dotnet sdk' "dotnet --version failed. global.json pins an SDK that is not installed:
+$SDK_VERSION"
+fi
+step_ok "dotnet sdk $SDK_VERSION"
+
+# -- 2. restore and build ---------------------------------------------------
+
+dotnet restore "$SOLUTION" --nologo
+if [ $? -ne 0 ]; then
+    step_fail 'restore' 'dotnet restore failed; its output above says why.'
+fi
+step_ok 'restore'
+
+dotnet build "$SOLUTION" -c Release --no-restore --nologo
+if [ $? -ne 0 ]; then
+    step_fail 'build' 'dotnet build failed. TreatWarningsAsErrors is on, so a single warning is enough to get here.'
+fi
+step_ok 'build (Release)'
+
+# Everything generated from here on lands in one temporary directory, which the
+# EXIT trap deletes. That includes the <name>-settings.json the schema exporter
+# writes next to every SDL file it produces.
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mosaic-verify.XXXXXX")"
+API_LOG="$TEMP_DIR/api.log"
+
+# -- 3. schema drift --------------------------------------------------------
+
+EXPORTED_SCHEMA="$TEMP_DIR/mosaic.graphql"
+dotnet run --project "$API_PROJECT" -c Release --no-build --no-launch-profile -- \
+    schema export --output "$EXPORTED_SCHEMA"
+if [ $? -ne 0 ]; then
+    step_fail 'schema export' 'dotnet run -- schema export failed; its output above says why.'
+fi
+if [ ! -f "$EXPORTED_SCHEMA" ]; then
+    step_fail 'schema export' "The exporter reported success but wrote nothing to $EXPORTED_SCHEMA."
+fi
+if [ ! -f "$COMMITTED_SCHEMA" ]; then
+    step_fail 'schema drift' "There is no committed snapshot at $COMMITTED_SCHEMA."
+fi
+
+if same_text "$COMMITTED_SCHEMA" "$EXPORTED_SCHEMA"; then
+    step_ok 'schema matches schema/mosaic.graphql'
+else
+    step_fail 'schema drift' "The exported schema is not the one committed in schema/mosaic.graphql.
+
+If the change is deliberate, regenerate the snapshot and commit it:
+
+    dotnet run --project src/Mosaic.Api -- schema export --output schema/mosaic.graphql
+
+If it is not, a dependency changed the schema behind your back. That is what
+this check exists to catch.
+
+$(schema_diff "$COMMITTED_SCHEMA" "$EXPORTED_SCHEMA" mosaic)"
+fi
+
+# -- 4. the three sample projects -------------------------------------------
+
+if [ ! -d "$SAMPLES_DIR" ]; then
+    step_skip 'sample schemas' 'samples/three-approaches does not exist yet'
+else
+    MISSING_PROJECTS=""
+    for entry in $SAMPLE_APPROACHES; do
+        approach="${entry%%:*}"
+        project_dir="$SAMPLES_DIR/${entry#*:}"
+        csproj=""
+        if [ -d "$project_dir" ]; then
+            csproj="$(find "$project_dir" -maxdepth 1 -name '*.csproj' | head -n 1)"
+        fi
+
+        if [ -z "$csproj" ]; then
+            MISSING_PROJECTS="$MISSING_PROJECTS ${entry#*:}"
+            continue
+        fi
+
+        # No --no-build here: the sample projects are not necessarily in
+        # Mosaic.slnx, so step 2 has not necessarily built them. They still build
+        # in Release with warnings as errors, so this compiles them under the
+        # same rules as the main service.
+        dotnet run --project "$csproj" -c Release --no-launch-profile -- \
+            schema export --output "$TEMP_DIR/$approach.graphql"
+        if [ $? -ne 0 ]; then
+            step_fail "sample schema $approach" "Exporting the schema from $csproj failed."
+        fi
+        if [ ! -f "$TEMP_DIR/$approach.graphql" ]; then
+            step_fail "sample schema $approach" "The exporter reported success but wrote nothing for $approach."
+        fi
+    done
+
+    if [ -n "$MISSING_PROJECTS" ]; then
+        step_fail 'sample schemas' "samples/three-approaches exists but does not hold all three projects.
+Missing (no .csproj found under samples/three-approaches/):$MISSING_PROJECTS"
+    fi
+
+    # Byte for byte here, not normalised: all three were produced by the same
+    # exporter on the same machine in the same run, so any difference at all is a
+    # real difference.
+    REFERENCE_APPROACH="implementation-first"
+    for entry in $SAMPLE_APPROACHES; do
+        approach="${entry%%:*}"
+        if [ "$approach" = "$REFERENCE_APPROACH" ]; then
+            continue
+        fi
+        if ! cmp -s "$TEMP_DIR/$REFERENCE_APPROACH.graphql" "$TEMP_DIR/$approach.graphql"; then
+            step_fail 'sample schemas identical' "The $approach sample does not export the same SDL as the $REFERENCE_APPROACH one.
+The whole point of the three is that they describe one schema three ways.
+
+$(schema_diff "$TEMP_DIR/$REFERENCE_APPROACH.graphql" "$TEMP_DIR/$approach.graphql" "sample-$approach")"
+        fi
+    done
+    step_ok 'the three sample schemas are byte-identical'
+
+    for entry in $SAMPLE_APPROACHES; do
+        approach="${entry%%:*}"
+        committed_sample="$SAMPLE_SCHEMA_DIR/$approach.graphql"
+        if [ ! -f "$committed_sample" ]; then
+            step_fail "sample schema $approach" "There is no committed snapshot at $committed_sample."
+        fi
+        if ! same_text "$committed_sample" "$TEMP_DIR/$approach.graphql"; then
+            step_fail "sample schema $approach" "schema/samples/$approach.graphql is not what the project exports.
+
+$(schema_diff "$committed_sample" "$TEMP_DIR/$approach.graphql" "committed-$approach")"
+        fi
+    done
+    step_ok 'sample schemas match schema/samples'
+fi
+
+# -- 5. start the service and run the chapter's query -----------------------
+
+if port_in_use; then
+    step_fail 'start api' "Something is already listening on port $PORT.
+Stop it first - a stray 'docker compose up', a debugger, or an earlier run of this script."
+fi
+
+# The URL goes in through the environment rather than the command line:
+# RunWithGraphQLCommands parses the process arguments itself, and it should not
+# have to know about --urls.
+#
+# ASPNETCORE_ENVIRONMENT is set for a different reason. --no-launch-profile means
+# launchSettings.json is ignored, and without it ASP.NET Core defaults to
+# Production. HotChocolate 16 answers introspection only in Development, so the
+# Postman collection's introspection request would fail with HC0046.
+ASPNETCORE_URLS="$BASE_URL" ASPNETCORE_ENVIRONMENT=Development dotnet run \
+    --project "$API_PROJECT" -c Release --no-build --no-launch-profile \
+    > "$API_LOG" 2>&1 &
+API_PID=$!
+
+health_deadline=$(( $(date +%s) + STARTUP_TIMEOUT_SECONDS ))
+healthy=0
+while [ "$(date +%s)" -lt "$health_deadline" ]; do
+    if ! kill -0 "$API_PID" 2>/dev/null; then
+        step_fail 'start api' "The service exited during start-up.
+
+$(log_tail)"
+    fi
+
+    if curl -fsS -o /dev/null --max-time 5 "$BASE_URL/health" 2>/dev/null; then
+        healthy=1
+        break
+    fi
+
+    sleep 0.5
+done
+
+if [ "$healthy" -ne 1 ]; then
+    step_fail 'start api' "$BASE_URL/health did not answer within $STARTUP_TIMEOUT_SECONDS seconds.
+
+$(log_tail)"
+fi
+step_ok "api answering on $BASE_URL/health"
+
+# The query holds no quotes and no backslashes, so this is a safe way to build
+# the request body without reaching for a JSON encoder.
+printf '{"query":"%s"}' "$VERIFY_QUERY" > "$TEMP_DIR/request.json"
+
+HTTP_STATUS="$(curl -sS -o "$TEMP_DIR/response.json" -w '%{http_code}' \
+    --max-time 120 \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json' \
+    --data-binary "@$TEMP_DIR/request.json" \
+    "$BASE_URL/graphql")"
+
+if [ "$HTTP_STATUS" != "200" ]; then
+    step_fail 'graphql query' "POST $BASE_URL/graphql answered $HTTP_STATUS.
+
+$(cat "$TEMP_DIR/response.json" 2>/dev/null)"
+fi
+
+RESPONSE_SUMMARY="$(summarise_response "$TEMP_DIR/response.json")"
+if [ $? -ne 0 ] || [ -z "$RESPONSE_SUMMARY" ]; then
+    step_fail 'graphql query' "Could not read the response as JSON:
+
+$(cat "$TEMP_DIR/response.json" 2>/dev/null)"
+fi
+
+read -r has_errors product_count review_count <<< "$RESPONSE_SUMMARY"
+
+if [ "$has_errors" -ne 0 ]; then
+    step_fail 'graphql query' "The response carries an errors key. The query is supposed to succeed outright.
+
+$(cat "$TEMP_DIR/response.json")"
+fi
+
+if [ "$product_count" -ne "$EXPECTED_PRODUCT_COUNT" ]; then
+    step_fail 'product count' "Expected $EXPECTED_PRODUCT_COUNT products, got $product_count."
+fi
+
+if [ "$review_count" -ne "$EXPECTED_REVIEW_COUNT" ]; then
+    step_fail 'review count' "Expected $EXPECTED_REVIEW_COUNT reviews across all products, got $review_count."
+fi
+step_ok "query returned $EXPECTED_PRODUCT_COUNT products and $EXPECTED_REVIEW_COUNT reviews"
+
+# -- 6. the lookup count ----------------------------------------------------
+
+# The middleware logs the total after the response has been written, so the line
+# can land a moment after the HTTP call returns.
+waited=0
+logged_counts=""
+while [ "$waited" -lt 60 ]; do
+    logged_counts="$(grep -o 'Service lookups this request: [0-9][0-9]*' "$API_LOG" 2>/dev/null \
+        | sed 's/.*: //' | tr '\n' ' ')"
+    if [ -n "$logged_counts" ]; then
+        break
+    fi
+    sleep 0.25
+    waited=$((waited + 1))
+done
+
+if [ -z "$logged_counts" ]; then
+    step_fail 'lookup count' "The service never logged a lookup count for the query.
+Either the counting middleware is gone or the log level hides it.
+
+$(log_tail)"
+fi
+
+case " $logged_counts " in
+    *" $EXPECTED_LOOKUP_COUNT "*)
+        step_ok "service logged 'Service lookups this request: $EXPECTED_LOOKUP_COUNT'"
+        ;;
+    *)
+        step_fail 'lookup count' "Expected the service to log 'Service lookups this request: $EXPECTED_LOOKUP_COUNT'.
+It logged: $logged_counts
+
+That number is quoted in the book: 1 lookup for the product list,
+$EXPECTED_PRODUCT_COUNT for their reviews, $EXPECTED_REVIEW_COUNT for the review authors. If it moved, either
+the seed data or the resolvers changed and the chapter needs rewriting - or
+someone fixed the N+1 early."
+        ;;
+esac
+
+# -- 7. the postman collection ----------------------------------------------
+
+NEWMAN_BIN=""
+NEWMAN_VIA_NPX=0
+if [ -x "$REPO_ROOT/node_modules/.bin/newman" ]; then
+    NEWMAN_BIN="$REPO_ROOT/node_modules/.bin/newman"
+elif command -v npx >/dev/null 2>&1 && npx --no newman --version >/dev/null 2>&1; then
+    # --no means "use what is already installed, do not download anything".
+    NEWMAN_BIN="npx"
+    NEWMAN_VIA_NPX=1
+fi
+
+if [ ! -f "$POSTMAN_COLLECTION" ] || [ ! -f "$POSTMAN_ENVIRONMENT" ]; then
+    step_skip 'postman' 'the collection or its environment is not in postman/ yet'
+elif [ -z "$NEWMAN_BIN" ]; then
+    step_skip 'postman' 'newman is not installed - run npm install first'
+else
+    # baseUrl is overridden rather than trusted: the environment file says 5100,
+    # and this script can be pointed at another port.
+    if [ "$NEWMAN_VIA_NPX" -eq 1 ]; then
+        "$NEWMAN_BIN" --no newman run "$POSTMAN_COLLECTION" \
+            --environment "$POSTMAN_ENVIRONMENT" \
+            --env-var "baseUrl=$BASE_URL" \
+            --bail
+    else
+        "$NEWMAN_BIN" run "$POSTMAN_COLLECTION" \
+            --environment "$POSTMAN_ENVIRONMENT" \
+            --env-var "baseUrl=$BASE_URL" \
+            --bail
+    fi
+    if [ $? -ne 0 ]; then
+        step_fail 'postman' 'newman failed; its output above says which request failed.'
+    fi
+    step_ok 'postman collection'
+fi
+
+# -- 8. the EXIT trap stops the service and prints the summary --------------
+
+exit 0

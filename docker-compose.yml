@@ -1,0 +1,44 @@
+# This file is the spine. Later chapters attach subgraphs, a router and a
+# database to it, and every one of them shows up here as another service on the
+# mosaic network. Today Mosaic is one deployable, so there is exactly one
+# service, and padding the file with a database nobody connects to would be a
+# lie about where the system currently stands.
+
+services:
+  mosaic-api:
+    build:
+      context: .
+      dockerfile: src/Mosaic.Api/Dockerfile
+    image: mosaic-api:dev
+    environment:
+      # HotChocolate 16 serves introspection only in Development. The Postman
+      # collection for this chapter reads the schema by introspecting it, so
+      # the container has to run in Development for that to work.
+      #
+      # This is a development baseline, not a production posture. A deployed
+      # Mosaic would set Production here and leave introspection closed, which
+      # is the default precisely because an open schema is a map of your API
+      # for anyone who asks.
+      ASPNETCORE_ENVIRONMENT: Development
+    ports:
+      # Host 5100 to container 8080, so http://localhost:5100/graphql is the
+      # URL either way: `dotnet run` (which binds 5100 directly) or this file.
+      - "5100:8080"
+    networks:
+      - mosaic
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      # HotChocolate 16 builds the whole schema during startup, so a schema
+      # error kills the container at boot instead of waiting for the first
+      # query. That work happens before /health answers, and start_period
+      # covers it: failures inside the window do not count against the
+      # container.
+      start_period: 30s
+    restart: unless-stopped
+
+networks:
+  mosaic:
+    name: mosaic
