@@ -3,10 +3,14 @@ using Mosaic.Api.Catalog.Model;
 namespace Mosaic.Api.Catalog.Data;
 
 /// <summary>
-/// Mosaic's catalog, seeded in memory. Chapter 4 replaces this file with a
-/// database; nothing outside the Catalog folder should notice.
+/// Mosaic's catalog.
+/// <para>
+/// Until chapter 4 this list was the store. It is now the seed: the same
+/// twenty-five rows, written into PostgreSQL once at start-up, so that a
+/// product identifier means the same thing at every tag in this repository.
+/// </para>
 /// </summary>
-public sealed class InMemoryCatalogData
+public sealed class CatalogSeedData
 {
     /// <summary>
     /// Product identifiers are generated from a fixed pattern so that the other

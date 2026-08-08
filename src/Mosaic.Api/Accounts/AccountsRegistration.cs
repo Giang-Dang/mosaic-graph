@@ -6,7 +6,7 @@ public static class AccountsRegistration
 {
     public static IServiceCollection AddAccountsDomain(this IServiceCollection services)
     {
-        services.AddSingleton<InMemoryAccountsData>();
+        services.AddSingleton<AccountsSeedData>();
         services.AddScoped<AccountsService>();
         return services;
     }

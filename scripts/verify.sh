@@ -4,9 +4,13 @@
 #
 # This is the gate that has to pass before a chapter tag is cut, and it is the
 # script a reader runs to check that the code in the book still does what the
-# book says it does. It builds the solution, checks the committed schema
-# snapshot against a freshly exported one, starts the service, runs the
-# chapter's query and asserts the three numbers the chapter quotes.
+# book says it does. It starts the database, builds the solution, checks the
+# committed schema snapshot against a freshly exported one, starts the service,
+# runs the chapter's query and asserts the numbers the chapter quotes.
+#
+# Since chapter 4 this needs Docker: Mosaic's data lives in PostgreSQL and the
+# script brings the container up itself. Set MOSAIC_KEEP_DATABASE=1 to leave it
+# running afterwards, which is worth doing while iterating.
 #
 # scripts/verify.ps1 is the same script for readers on Windows. Changes to one
 # belong in the other.
@@ -20,6 +24,8 @@ set -u
 
 PORT="${MOSAIC_PORT:-5100}"
 STARTUP_TIMEOUT_SECONDS="${MOSAIC_STARTUP_TIMEOUT:-60}"
+DATABASE_TIMEOUT_SECONDS="${MOSAIC_DATABASE_TIMEOUT:-90}"
+KEEP_DATABASE="${MOSAIC_KEEP_DATABASE:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -51,11 +57,47 @@ EXPECTED_PRODUCT_COUNT=25
 EXPECTED_REVIEW_COUNT=120
 EXPECTED_LOOKUP_COUNT=146
 
+# The request pipeline HotChocolate assembles for this service, in order. Twelve
+# of these come from the default pipeline; CostAnalyzerMiddleware is inserted
+# after DocumentValidationMiddleware by the cost analyzer that AddGraphQL turns
+# on unless default security is disabled. Chapter 3 prints this list, so a
+# change here is a change to the chapter.
+EXPECTED_PIPELINE="InstrumentationMiddleware
+ExceptionMiddleware
+TimeoutMiddleware
+DocumentCacheMiddleware
+DocumentParserMiddleware
+DocumentValidationMiddleware
+CostAnalyzerMiddleware
+OperationCacheMiddleware
+OperationResolverMiddleware
+SkipWarmupExecutionMiddleware
+OperationVariableCoercionMiddleware
+ConcurrencyGateMiddleware
+OperationExecutionMiddleware"
+
+# Every resolver the engine runs for the verify query does exactly one
+# domain-service lookup, so this matches EXPECTED_LOOKUP_COUNT. Plain record
+# properties - title, rating, displayName - are not resolvers and are not
+# counted.
+EXPECTED_RESOLVER_COUNT=146
+
+# What the same query costs the database. Until chapter 4 this could only be
+# guessed at from the lookup count; now an EF Core command interceptor counts
+# the statements that actually reach PostgreSQL, and the timeline reports it.
+#
+# At tag ch04-ef the two numbers are equal, because every single-key lookup is
+# one statement. At tag ch04 the DataLoaders make this 3 while the lookup count
+# stays 146: the resolvers still ask 146 questions, and the answers arrive in
+# three round trips.
+EXPECTED_SQL_COMMAND_COUNT=146
+
 API_PID=""
 TEMP_DIR=""
 API_LOG=""
 SUMMARY=""
 JSON_TOOL=""
+STARTED_DATABASE=0
 
 # ---------------------------------------------------------------------------
 # Step reporting
@@ -221,6 +263,13 @@ cleanup() {
         rm -rf "$TEMP_DIR"
     fi
 
+    # The container is stopped, not removed, and its volume is left alone. A
+    # verification run should not be able to destroy data, and re-seeding an
+    # empty database costs a second anyway.
+    if [ "$STARTED_DATABASE" -eq 1 ] && [ "$KEEP_DATABASE" != "1" ]; then
+        docker compose --project-directory "$REPO_ROOT" stop mosaic-db >/dev/null 2>&1 || true
+    fi
+
     printf '\n--- summary ---\n'
     printf '%s' "$SUMMARY"
     if [ "$status" -eq 0 ]; then
@@ -262,6 +311,26 @@ if [ $? -ne 0 ]; then
 $SDK_VERSION"
 fi
 step_ok "dotnet sdk $SDK_VERSION"
+
+# -- 1b. the database -------------------------------------------------------
+
+# Mosaic has needed PostgreSQL since chapter 4, and docker-compose.yml is the
+# only description of it, so the script starts it from there rather than asking
+# the reader to remember a command.
+require_command docker 'database' \
+    'Mosaic has needed PostgreSQL since chapter 4, and this script starts it from docker-compose.yml.'
+
+docker compose --project-directory "$REPO_ROOT" up --detach --wait \
+    --wait-timeout "$DATABASE_TIMEOUT_SECONDS" mosaic-db
+if [ $? -ne 0 ]; then
+    step_fail 'database' "docker compose up failed.
+If the container is restarting, read its log: the PostgreSQL 18 image refuses to
+start against a volume written by an earlier major version.
+
+    docker compose logs mosaic-db"
+fi
+STARTED_DATABASE=1
+step_ok 'postgres is up and healthy'
 
 # -- 2. restore and build ---------------------------------------------------
 
@@ -505,6 +574,97 @@ That number is quoted in the book: 1 lookup for the product list,
 $EXPECTED_PRODUCT_COUNT for their reviews, $EXPECTED_REVIEW_COUNT for the review authors. If it moved, either
 the seed data or the resolvers changed and the chapter needs rewriting - or
 someone fixed the N+1 early."
+        ;;
+esac
+
+# -- 6b. the request pipeline -----------------------------------------------
+
+# The pipeline is logged once, while the schema is being built, so by the time a
+# query has been answered these lines are already there.
+LOGGED_PIPELINE="$(sed -n 's/^ *[0-9][0-9]*\. \([^ ][^ ]*\) *$/\1/p' "$API_LOG" 2>/dev/null)"
+
+if [ -z "$LOGGED_PIPELINE" ]; then
+    step_fail 'request pipeline' "The service never logged its request pipeline.
+AddPipelineReport() is what writes it; check it is still registered in
+Program.cs, and registered after AddGraphQL().
+
+$(log_tail)"
+fi
+
+if [ "$LOGGED_PIPELINE" != "$EXPECTED_PIPELINE" ]; then
+    step_fail 'request pipeline' "The request pipeline is not the one chapter 3 prints.
+
+Expected:
+$EXPECTED_PIPELINE
+
+Found:
+$LOGGED_PIPELINE
+
+The order is the spine of chapter 3. Do not reorder it to make this pass; work
+out what moved and why."
+fi
+step_ok 'request pipeline is the expected 13 middleware, in order'
+
+# -- 6c. the request timeline -----------------------------------------------
+
+waited=0
+logged_resolvers=""
+while [ "$waited" -lt 60 ]; do
+    logged_resolvers="$(grep -o '[0-9][0-9]* resolvers,' "$API_LOG" 2>/dev/null \
+        | sed 's/ resolvers,//' | tr '\n' ' ')"
+    if [ -n "$logged_resolvers" ]; then
+        break
+    fi
+    sleep 0.25
+    waited=$((waited + 1))
+done
+
+if [ -z "$logged_resolvers" ]; then
+    step_fail 'request timeline' "The service never logged a request timeline.
+RequestTimelineListener is what writes it. It is registered through
+AddDiagnosticEventListener, and it needs AddApplicationService<ILoggerFactory>()
+alongside it or the schema will not build at all.
+
+$(log_tail)"
+fi
+
+case " $logged_resolvers " in
+    *" $EXPECTED_RESOLVER_COUNT "*)
+        step_ok "request timeline reported $EXPECTED_RESOLVER_COUNT resolvers"
+        ;;
+    *)
+        step_fail 'request timeline' "Expected the timeline to report $EXPECTED_RESOLVER_COUNT resolvers for the query.
+It reported: $logged_resolvers
+
+Chapter 3 makes a point of this matching the lookup count exactly: every
+resolver the engine runs does one domain-service lookup, and the plain record
+properties are not resolvers at all."
+        ;;
+esac
+
+# -- 6d. the database round trips -------------------------------------------
+
+logged_sql="$(grep -o '[0-9][0-9]* SQL)' "$API_LOG" 2>/dev/null | sed 's/ SQL)//' | tr '\n' ' ')"
+
+if [ -z "$logged_sql" ]; then
+    step_fail 'sql command count' "The timeline never reported a SQL command count.
+SqlCommandCounter is the EF Core interceptor that produces it, and it is
+attached to the pooled context factory in AddMosaicDatabase.
+
+$(log_tail)"
+fi
+
+case " $logged_sql " in
+    *" $EXPECTED_SQL_COMMAND_COUNT "*)
+        step_ok "request timeline reported $EXPECTED_SQL_COMMAND_COUNT SQL commands"
+        ;;
+    *)
+        step_fail 'sql command count' "Expected the timeline to report $EXPECTED_SQL_COMMAND_COUNT SQL commands for the query.
+It reported: $logged_sql
+
+This is the number chapter 4 is about. If it went up, something started querying
+per row. If it went down, something started batching, and the chapter that
+claims otherwise needs rewriting."
         ;;
 esac
 

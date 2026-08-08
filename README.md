@@ -19,6 +19,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 |-----|---------|-------|
 | `ch02` | 2. HotChocolate, Quickly | One service, six domain folders, in-memory data |
 | `ch03` | 3. The Life of a Request | The same service, instrumented: pipeline report, per-request timeline, resolver-scope sample |
+| `ch04-ef` | 4. Data Without the N+1, halfway | The same schema on PostgreSQL through EF Core. Still 146 lookups, and now 146 round trips |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -27,13 +28,25 @@ intermediate one.
 ## What you need
 
 - .NET SDK 10.0.302 or later in the same feature band (pinned in `global.json`)
-- Docker, if you want to run it in a container
+- Docker. Since chapter 4 Mosaic keeps its data in PostgreSQL, and
+  `docker-compose.yml` is the only description of it
 - Node, only to run the Postman collection from the command line
 
 ## Running it
 
+Start the database first. It is the same container whether you then run the
+service from the SDK or from its own image:
+
 ```
+docker compose up -d mosaic-db
 dotnet run --project src/Mosaic.Api
+```
+
+The service creates its schema and seeds it on first start, and says so:
+
+```
+info: Mosaic.Api.Infrastructure.Data.DatabaseSeeder[0]
+      Seeded 25 products, 120 reviews, 12 customers and 8 orders into a newly created schema.
 ```
 
 The service listens on <http://localhost:5100>. Open
@@ -64,12 +77,18 @@ pwsh scripts/verify.ps1      # Windows, macOS, Linux
 bash scripts/verify.sh       # macOS, Linux
 ```
 
-This is the gate a chapter tag has to pass. It restores and builds the solution
-in Release with warnings as errors, regenerates the schema and fails if it has
-drifted from the committed `schema/mosaic.graphql`, checks that the three
-sample projects still produce byte-identical SDL, starts the service, asserts
-the seeded catalog answers with 25 products and 120 reviews, and runs the
-Postman collection.
+This is the gate a chapter tag has to pass. It starts PostgreSQL from
+`docker-compose.yml`, restores and builds the solution in Release with warnings
+as errors, regenerates the schema and fails if it has drifted from the committed
+`schema/mosaic.graphql`, checks that the three sample projects still produce
+byte-identical SDL, starts the service, asserts the seeded catalog answers with
+25 products and 120 reviews, checks the request pipeline is the expected
+thirteen middleware in order, checks the lookup, resolver and SQL command counts
+the book quotes, and runs the Postman collection.
+
+It stops the database container on the way out and leaves its volume alone. Pass
+`-KeepDatabase` (or set `MOSAIC_KEEP_DATABASE=1`) to leave it running, which is
+worth doing while iterating: starting PostgreSQL is the slowest step.
 
 The Postman collection needs newman, which is pinned as a local dev dependency:
 
@@ -89,7 +108,8 @@ src/Mosaic.Api/          the service; one folder per domain
   Reviews/               what customers thought
   Accounts/              who the customers are
   Ordering/              what they bought
-  Infrastructure/        the lookup counter and its options
+  Infrastructure/        the lookup counter
+    Data/                the DbContext, the seeder and the SQL command counter
     Diagnostics/         the pipeline report and the per-request timeline
 samples/three-approaches/  the same tiny schema, three authoring styles
 samples/resolver-scopes/   what [UseRequestScope] changes, in two fields
@@ -114,9 +134,11 @@ Service lookups this request: 146
 
 One lookup for the product list, one per product for its reviews, one per review
 for its author. The domain services take a single key and have no batch
-overload, deliberately. Against a `List<T>` in memory nobody notices, which is
-exactly why this pattern reaches production. Chapter 4 replaces the data layer
-and brings that number down.
+overload, deliberately.
+
+Against a `List<T>` in memory nobody noticed, which is exactly why this pattern
+reaches production. At tag `ch04-ef` the same 146 lookups are 146 statements
+against PostgreSQL, and the request timeline reports both numbers.
 
 ## Watching a request go through
 
@@ -134,7 +156,7 @@ and every request logs a timeline:
 
 ```
 parse - validate 0.204ms compile 0.097ms coerce - execute 0.492ms total 0.931ms
-    (document cache miss, operation cache miss, 146 resolvers)
+    (document cache miss, operation cache miss, 146 resolvers, 146 SQL)
 ```
 
 Send the same query twice and the second one reports both caches hitting, with
@@ -145,6 +167,10 @@ why a syntax error never produces a timeline line at all.
 The resolver count matches the lookup count because every resolver here does
 exactly one domain-service lookup. Plain record properties - `title`, `rating`,
 `displayName` - are not resolvers and never appear in it.
+
+The last field arrived with chapter 4 and is the one worth watching. It counts
+the commands Entity Framework Core actually sent, measured by an interceptor on
+the command rather than inferred from anything above it.
 
 To see what `[UseRequestScope]` changes:
 

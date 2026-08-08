@@ -6,7 +6,7 @@ public static class CatalogRegistration
 {
     public static IServiceCollection AddCatalogDomain(this IServiceCollection services)
     {
-        services.AddSingleton<InMemoryCatalogData>();
+        services.AddSingleton<CatalogSeedData>();
         services.AddScoped<CatalogService>();
         return services;
     }

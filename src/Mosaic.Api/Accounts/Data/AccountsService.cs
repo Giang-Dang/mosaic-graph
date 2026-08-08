@@ -1,5 +1,7 @@
+using Microsoft.EntityFrameworkCore;
 using Mosaic.Api.Accounts.Model;
 using Mosaic.Api.Infrastructure;
+using Mosaic.Api.Infrastructure.Data;
 
 namespace Mosaic.Api.Accounts.Data;
 
@@ -12,17 +14,27 @@ namespace Mosaic.Api.Accounts.Data;
 /// <see cref="GetCustomerByIdAsync"/>. That omission is deliberate, and it is
 /// what a nested query against this schema is meant to expose.
 /// </remarks>
-public sealed class AccountsService(InMemoryAccountsData data, ServiceCallCounter counter)
+public sealed class AccountsService(MosaicDbContext db, ServiceCallCounter counter)
 {
-    public async Task<IReadOnlyList<Customer>> GetCustomersAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<Customer>> GetCustomersAsync(
+        CancellationToken cancellationToken)
     {
-        await counter.RecordLookupAsync(cancellationToken);
-        return data.Customers;
+        counter.RecordLookup();
+
+        return await db.Customers
+            .AsNoTracking()
+            .OrderBy(c => c.Id)
+            .ToListAsync(cancellationToken);
     }
 
-    public async Task<Customer?> GetCustomerByIdAsync(Guid id, CancellationToken cancellationToken)
+    public async Task<Customer?> GetCustomerByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken)
     {
-        await counter.RecordLookupAsync(cancellationToken);
-        return data.Customers.FirstOrDefault(c => c.Id == id);
+        counter.RecordLookup();
+
+        return await db.Customers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == id, cancellationToken);
     }
 }

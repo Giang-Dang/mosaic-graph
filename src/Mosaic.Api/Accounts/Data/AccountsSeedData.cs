@@ -3,11 +3,15 @@ using Mosaic.Api.Accounts.Model;
 namespace Mosaic.Api.Accounts.Data;
 
 /// <summary>
-/// Mosaic's customers, seeded in memory. Twelve of them: enough that a review
-/// feed repeats a name now and then, few enough to hold in your head while you
-/// read a trace. Chapter 4 replaces this file with a database.
+/// Mosaic's customers. Twelve of them: enough that a review feed repeats a
+/// name now and then, few enough to hold in your head while you read a trace.
+/// <para>
+/// Until chapter 4 this list was the store. It is now the seed: the same twelve
+/// rows, written into PostgreSQL once at start-up, so that every identifier the
+/// earlier chapters printed still identifies the same customer.
+/// </para>
 /// </summary>
-public sealed class InMemoryAccountsData
+public sealed class AccountsSeedData
 {
     /// <summary>
     /// Customer identifiers follow the same fixed pattern the catalog uses for

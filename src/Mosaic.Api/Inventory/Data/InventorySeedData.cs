@@ -3,10 +3,11 @@ using Mosaic.Api.Inventory.Model;
 namespace Mosaic.Api.Inventory.Data;
 
 /// <summary>
-/// Mosaic's stock levels, seeded in memory. One row per product, so in this
-/// version of Mosaic a product sits in exactly one warehouse.
+/// Mosaic's stock levels. One row per product, so in this version of Mosaic a
+/// product sits in exactly one warehouse. Since chapter 4 this list is the
+/// seed for a PostgreSQL table rather than the store itself.
 /// </summary>
-public sealed class InMemoryInventoryData
+public sealed class InventorySeedData
 {
     /// <summary>
     /// Inventory's own copy of the pattern Catalog uses to generate product

@@ -97,7 +97,8 @@ public sealed class RequestTimelineListener(ILoggerFactory loggerFactory)
         => _logger.LogInformation(
             "parse {Parse} validate {Validate} compile {Compile} coerce {Coerce} "
             + "execute {Execute} total {Total} (document cache {DocumentCache}, "
-            + "operation cache {OperationCache}, {Resolvers} resolvers)",
+            + "operation cache {OperationCache}, {Resolvers} resolvers, "
+            + "{SqlCommands} SQL)",
             Format(timeline.Parse),
             Format(timeline.Validate),
             Format(timeline.Compile),
@@ -106,7 +107,8 @@ public sealed class RequestTimelineListener(ILoggerFactory loggerFactory)
             Format(timeline.Total),
             timeline.DocumentCacheHit ? "hit" : "miss",
             timeline.OperationCacheHit ? "hit" : "miss",
-            timeline.ResolverCount);
+            timeline.ResolverCount,
+            timeline.SqlCommandCount);
 
     private static string Format(TimeSpan elapsed)
         => elapsed == TimeSpan.Zero ? "-" : $"{elapsed.TotalMilliseconds:0.000}ms";

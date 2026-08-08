@@ -13,12 +13,14 @@ namespace Mosaic.Api.Ordering.Model;
 /// through <c>OrderLine.product</c> instead.
 /// </param>
 /// <param name="Quantity">How many units of the product this line sold.</param>
-/// <param name="UnitPrice">
-/// What one unit cost on the day the order was placed. Ordering keeps its own
-/// copy rather than asking Pricing, because a price list changes and an order
-/// does not.
-/// </param>
 public sealed record OrderLine(
     [property: GraphQLIgnore] Guid ProductId,
-    int Quantity,
-    Money UnitPrice);
+    int Quantity)
+{
+    /// <summary>
+    /// What one unit cost on the day the order was placed. Ordering keeps its
+    /// own copy rather than asking Pricing, because a price list changes and an
+    /// order does not.
+    /// </summary>
+    public required Money UnitPrice { get; init; }
+}

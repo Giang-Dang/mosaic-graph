@@ -8,9 +8,14 @@
 .DESCRIPTION
     This is the gate that has to pass before a chapter tag is cut, and it is the
     script a reader runs to check that the code in the book still does what the
-    book says it does. It builds the solution, checks the committed schema
-    snapshot against a freshly exported one, starts the service, runs the
-    chapter's query and asserts the three numbers the chapter quotes.
+    book says it does. It starts the database, builds the solution, checks the
+    committed schema snapshot against a freshly exported one, starts the
+    service, runs the chapter's query and asserts the numbers the chapter
+    quotes.
+
+    Since chapter 4 this needs Docker: Mosaic's data lives in PostgreSQL and the
+    script brings the container up itself. Everything else it needs is the .NET
+    SDK pinned in global.json.
 
     Nothing here is clever on purpose. A reader who has never written a line of
     PowerShell should be able to read it top to bottom and see what is checked.
@@ -29,7 +34,15 @@ param(
     [int] $Port = 5100,
 
     # How long to wait for the service to answer /health before giving up.
-    [int] $StartupTimeoutSeconds = 60
+    [int] $StartupTimeoutSeconds = 60,
+
+    # How long to wait for PostgreSQL to report healthy.
+    [int] $DatabaseTimeoutSeconds = 90,
+
+    # Leave the database container running when the script finishes. Off by
+    # default so a verification run gives the machine back the way it found it;
+    # useful while iterating, because starting PostgreSQL is the slowest step.
+    [switch] $KeepDatabase
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,6 +85,16 @@ $VerifyQuery          = '{ products { title reviews { rating author { displayNam
 $ExpectedProductCount = 25
 $ExpectedReviewCount  = 120
 $ExpectedLookupCount  = 146
+
+# What the same query costs the database. Until chapter 4 this could only be
+# guessed at from the lookup count; now an EF Core command interceptor counts
+# the statements that actually reach PostgreSQL, and the timeline reports it.
+#
+# At tag ch04-ef the two numbers are equal, because every single-key lookup is
+# one statement. At tag ch04 the DataLoaders make this 3 while the lookup count
+# stays 146: the resolvers still ask 146 questions, and the answers arrive in
+# three round trips.
+$ExpectedSqlCommandCount = 146
 
 # The request pipeline HotChocolate assembles for this service, in order. Twelve
 # of these come from the default pipeline; CostAnalyzerMiddleware is inserted
@@ -267,6 +290,7 @@ function Get-LogTail {
 
 $apiProcess = $null
 $tempDir = $null
+$startedDatabase = $false
 $previousAspNetCoreUrls = $env:ASPNETCORE_URLS
 $aspNetCoreUrlsWasSet = $null -ne $previousAspNetCoreUrls
 $previousAspNetCoreEnvironment = $env:ASPNETCORE_ENVIRONMENT
@@ -291,6 +315,30 @@ try {
         Stop-Verify 'dotnet sdk' "dotnet --version exited with $LASTEXITCODE. global.json most likely pins an SDK that is not installed; the output above says which."
     }
     Write-Ok "dotnet sdk $sdkVersion"
+
+    # -- 1b. the database ---------------------------------------------------
+
+    # Mosaic has needed PostgreSQL since chapter 4, and docker-compose.yml is
+    # the only description of it, so the script starts it from there rather
+    # than asking the reader to remember a command.
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        Stop-Verify 'database' (Join-Lines @(
+            'docker is not on PATH, and Mosaic has needed PostgreSQL since chapter 4.'
+            'Install Docker, or point ConnectionStrings__Mosaic at a PostgreSQL 18'
+            'server you already have and start this script with the database up.'))
+    }
+
+    & docker compose --project-directory $RepoRoot up --detach --wait --wait-timeout $DatabaseTimeoutSeconds mosaic-db
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Verify 'database' (Join-Lines @(
+            "docker compose up exited with $LASTEXITCODE."
+            'If the container is restarting, read its log: the PostgreSQL 18 image'
+            'refuses to start against a volume written by an earlier major version.'
+            ''
+            '    docker compose logs mosaic-db'))
+    }
+    $startedDatabase = $true
+    Write-Ok 'postgres is up and healthy'
 
     # -- 2. restore and build ----------------------------------------------
 
@@ -618,7 +666,7 @@ try {
     $loggedResolvers = @()
     while ((Get-Date) -lt $timelineDeadline) {
         $loggedResolvers = @(
-            [regex]::Matches((Get-LogText $apiStdout), '(\d+) resolvers\)') |
+            [regex]::Matches((Get-LogText $apiStdout), '(\d+) resolvers,') |
                 ForEach-Object { $_.Groups[1].Value })
         if ($loggedResolvers.Count -gt 0) {
             break
@@ -646,6 +694,32 @@ try {
             'the plain record properties are not resolvers at all.'))
     }
     Write-Ok "request timeline reported $ExpectedResolverCount resolvers"
+
+    # -- 6d. the database round trips --------------------------------------
+
+    $loggedSql = @(
+        [regex]::Matches((Get-LogText $apiStdout), '(\d+) SQL\)') |
+            ForEach-Object { $_.Groups[1].Value })
+
+    if ($loggedSql.Count -eq 0) {
+        Stop-Verify 'sql command count' (Join-Lines @(
+            'The timeline never reported a SQL command count.'
+            'SqlCommandCounter is the EF Core interceptor that produces it, and it'
+            'is attached to the pooled context factory in AddMosaicDatabase.'
+            ''
+            (Get-LogTail $apiStdout)))
+    }
+
+    if ($loggedSql -notcontains "$ExpectedSqlCommandCount") {
+        Stop-Verify 'sql command count' (Join-Lines @(
+            "Expected the timeline to report $ExpectedSqlCommandCount SQL commands for the query."
+            "It reported: $($loggedSql -join ', ')."
+            ''
+            'This is the number chapter 4 is about. If it went up, something started'
+            'querying per row. If it went down, something started batching, and the'
+            'chapter that claims otherwise needs rewriting.'))
+    }
+    Write-Ok "request timeline reported $ExpectedSqlCommandCount SQL commands"
 
     # -- 7. the postman collection -----------------------------------------
 
@@ -730,6 +804,13 @@ try {
 
     if ($tempDir -and (Test-Path -LiteralPath $tempDir)) {
         Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # The container is stopped, not removed, and its volume is left alone. A
+    # verification run should not be able to destroy data, and re-seeding an
+    # empty database costs a second anyway.
+    if ($startedDatabase -and -not $KeepDatabase) {
+        & docker compose --project-directory $RepoRoot stop mosaic-db *> $null
     }
 }
 

@@ -9,12 +9,24 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     <HotChocolateVersion>16.6.0</HotChocolateVersion>
+
+    <!-- Npgsql 10.0.3's net10.0 group requires Microsoft.EntityFrameworkCore
+         in [10.0.4, 11.0.0), so 10.0.0 does not resolve. 10.0.10 is the latest
+         stable in that band. -->
+    <EntityFrameworkVersion>10.0.10</EntityFrameworkVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageVersion Include="HotChocolate.AspNetCore" Version="$(HotChocolateVersion)" />
     <PackageVersion Include="HotChocolate.AspNetCore.CommandLine" Version="$(HotChocolateVersion)" />
     <PackageVersion Include="HotChocolate.Types.Analyzers" Version="$(HotChocolateVersion)" />
+    <PackageVersion Include="HotChocolate.Data" Version="$(HotChocolateVersion)" />
+    <PackageVersion Include="HotChocolate.Data.EntityFramework" Version="$(HotChocolateVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="$(EntityFrameworkVersion)" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
 </Project>

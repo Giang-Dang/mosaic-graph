@@ -1,4 +1,6 @@
+using Microsoft.EntityFrameworkCore;
 using Mosaic.Api.Infrastructure;
+using Mosaic.Api.Infrastructure.Data;
 using Mosaic.Api.Inventory.Model;
 
 namespace Mosaic.Api.Inventory.Data;
@@ -11,15 +13,20 @@ namespace Mosaic.Api.Inventory.Data;
 /// product identifiers, which is deliberate: it is what makes a query that
 /// walks a page of products call this service once per product.
 /// </remarks>
-public sealed class InventoryService(InMemoryInventoryData data, ServiceCallCounter counter)
+public sealed class InventoryService(MosaicDbContext db, ServiceCallCounter counter)
 {
     /// <summary>
     /// The stock row for one product, or <c>null</c> if Inventory has never
     /// been told about it.
     /// </summary>
-    public async Task<StockLevel?> GetStockLevelAsync(Guid productId, CancellationToken cancellationToken)
+    public async Task<StockLevel?> GetStockLevelAsync(
+        Guid productId,
+        CancellationToken cancellationToken)
     {
-        await counter.RecordLookupAsync(cancellationToken);
-        return data.StockLevels.FirstOrDefault(s => s.ProductId == productId);
+        counter.RecordLookup();
+
+        return await db.StockLevels
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.ProductId == productId, cancellationToken);
     }
 }

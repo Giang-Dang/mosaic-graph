@@ -1,15 +1,49 @@
-# This file is the spine. Later chapters attach subgraphs, a router and a
-# database to it, and every one of them shows up here as another service on the
-# mosaic network. Today Mosaic is one deployable, so there is exactly one
-# service, and padding the file with a database nobody connects to would be a
-# lie about where the system currently stands.
+# This file is the spine. Later chapters attach subgraphs and a router to it,
+# and every one of them shows up here as another service on the mosaic network.
+# Chapter 4 attached the first of those: a database. Mosaic is still one
+# deployable, but it is no longer the only process in the picture.
 
 services:
+  mosaic-db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: mosaic
+      POSTGRES_USER: mosaic
+      POSTGRES_PASSWORD: mosaic
+    ports:
+      # Published on the host so `dotnet run` and `docker compose up` reach the
+      # same database with the same connection string. A deployed Mosaic would
+      # not publish this port at all.
+      - "5432:5432"
+    volumes:
+      # Mounted at /var/lib/postgresql, not at its /data subdirectory. The
+      # official image changed this at 18: it now keeps the cluster in a
+      # version-named directory underneath, so that pg_upgrade can see the old
+      # and the new one without crossing a mount point. Mount the old path
+      # against an 18 image and the container refuses to start, with a long and
+      # unusually good explanation of why.
+      - mosaic-db-data:/var/lib/postgresql
+    healthcheck:
+      # pg_isready answers as soon as the server accepts connections. The first
+      # start of a fresh volume runs initdb and then restarts the server, so
+      # without a health gate the API would connect during that window and die.
+      test: ["CMD-SHELL", "pg_isready -U mosaic -d mosaic"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - mosaic
+    restart: unless-stopped
+
   mosaic-api:
     build:
       context: .
       dockerfile: src/Mosaic.Api/Dockerfile
     image: mosaic-api:dev
+    depends_on:
+      mosaic-db:
+        condition: service_healthy
     environment:
       # HotChocolate 16 serves introspection only in Development. The Postman
       # collection for this chapter reads the schema by introspecting it, so
@@ -20,6 +54,11 @@ services:
       # is the default precisely because an open schema is a map of your API
       # for anyone who asks.
       ASPNETCORE_ENVIRONMENT: Development
+
+      # The one setting that differs between the two ways of running Mosaic.
+      # appsettings.json says localhost, which is right for `dotnet run`;
+      # inside the network the database answers to its service name.
+      ConnectionStrings__Mosaic: "Host=mosaic-db;Port=5432;Database=mosaic;Username=mosaic;Password=mosaic"
     ports:
       # Host 5100 to container 8080, so http://localhost:5100/graphql is the
       # URL either way: `dotnet run` (which binds 5100 directly) or this file.
@@ -33,12 +72,16 @@ services:
       retries: 3
       # HotChocolate 16 builds the whole schema during startup, so a schema
       # error kills the container at boot instead of waiting for the first
-      # query. That work happens before /health answers, and start_period
-      # covers it: failures inside the window do not count against the
-      # container.
+      # query. Since chapter 4 the seeder runs there too. That work happens
+      # before /health answers, and start_period covers it: failures inside the
+      # window do not count against the container.
       start_period: 30s
     restart: unless-stopped
 
 networks:
   mosaic:
     name: mosaic
+
+volumes:
+  mosaic-db-data:
+    name: mosaic-db-data

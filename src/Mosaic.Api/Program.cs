@@ -1,6 +1,7 @@
 using Mosaic.Api.Accounts;
 using Mosaic.Api.Catalog;
 using Mosaic.Api.Infrastructure;
+using Mosaic.Api.Infrastructure.Data;
 using Mosaic.Api.Infrastructure.Diagnostics;
 using Mosaic.Api.Inventory;
 using Mosaic.Api.Ordering;
@@ -9,14 +10,23 @@ using Mosaic.Api.Reviews;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.Configure<MosaicDataOptions>(builder.Configuration.GetSection("Mosaic:Data"));
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<ServiceCallCounter>();
 
 // One timeline per request, read back through RequestServices. Scoped, not
-// singleton: the pipeline phases and the resolvers all have to write to the
-// same instance, and only for as long as the request lives.
+// singleton: the pipeline phases, the resolvers and the command interceptor all
+// have to write to the same instance, and only for as long as the request lives.
 builder.Services.AddScoped<RequestTimeline>();
+
+// PostgreSQL, a pooled context factory, and the start-up seeder. The
+// connection string is the only piece of Mosaic that differs between running it
+// with `dotnet run` and running it under docker compose.
+builder.Services.AddMosaicDatabase(
+    builder.Configuration.GetConnectionString("Mosaic")
+        ?? throw new InvalidOperationException(
+            "No connection string named 'Mosaic'. Start the database with "
+            + "`docker compose up -d mosaic-db`, or set "
+            + "ConnectionStrings__Mosaic in the environment."));
 
 // Mosaic's six domains. Today they are six folders in one deployable, and this
 // list is the only place that fact is written down.
@@ -30,6 +40,10 @@ builder.Services
 
 builder.AddGraphQL()
     .AddMosaic()
+    // RegisterDbContextFactory only teaches the resolver compiler how to build
+    // a MosaicDbContext parameter. AddMosaicDatabase above is what registers
+    // the factory itself; without it this line compiles and fails at runtime.
+    .RegisterDbContextFactory<MosaicDbContext>()
     // A diagnostic listener is built from the schema service provider, which
     // does not inherit the application's registrations. Drop the next line and
     // startup fails with "Unable to resolve service for type

@@ -6,7 +6,7 @@ public static class PricingRegistration
 {
     public static IServiceCollection AddPricingDomain(this IServiceCollection services)
     {
-        services.AddSingleton<InMemoryPricingData>();
+        services.AddSingleton<PricingSeedData>();
         services.AddScoped<PricingService>();
         return services;
     }

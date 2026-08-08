@@ -2,7 +2,8 @@ namespace Mosaic.Api.Infrastructure.Diagnostics;
 
 /// <summary>
 /// One GraphQL request's trip through the execution pipeline: which caches it
-/// hit, how long each phase took, and how many resolvers ran.
+/// hit, how long each phase took, how many resolvers ran, and how many commands
+/// reached the database.
 /// </summary>
 /// <remarks>
 /// This is registered as a scoped service and read back through
@@ -15,6 +16,7 @@ namespace Mosaic.Api.Infrastructure.Diagnostics;
 public sealed class RequestTimeline
 {
     private int _resolverCount;
+    private int _sqlCommandCount;
 
     /// <summary>The document was found in the document cache, so it was neither parsed nor validated.</summary>
     public bool DocumentCacheHit { get; set; }
@@ -42,4 +44,14 @@ public sealed class RequestTimeline
     public int ResolverCount => Volatile.Read(ref _resolverCount);
 
     public void CountResolver() => Interlocked.Increment(ref _resolverCount);
+
+    /// <summary>
+    /// How many commands Entity Framework Core sent to PostgreSQL while serving
+    /// this request. Counted by <see cref="Data.SqlCommandCounter"/>, which
+    /// intercepts the command itself, so this is round trips rather than an
+    /// estimate of them.
+    /// </summary>
+    public int SqlCommandCount => Volatile.Read(ref _sqlCommandCount);
+
+    public void CountSqlCommand() => Interlocked.Increment(ref _sqlCommandCount);
 }

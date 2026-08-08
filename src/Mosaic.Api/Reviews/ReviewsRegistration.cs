@@ -6,7 +6,7 @@ public static class ReviewsRegistration
 {
     public static IServiceCollection AddReviewsDomain(this IServiceCollection services)
     {
-        services.AddSingleton<InMemoryReviewsData>();
+        services.AddSingleton<ReviewsSeedData>();
         services.AddScoped<ReviewsService>();
         return services;
     }

@@ -3,11 +3,12 @@ using Mosaic.Api.Reviews.Model;
 namespace Mosaic.Api.Reviews.Data;
 
 /// <summary>
-/// Mosaic's reviews, seeded in memory: 120 of them, spread unevenly over the
-/// 25 catalogued products. Three products have none at all, which is what makes
-/// a nullable average rating worth having.
+/// Mosaic's reviews: 120 of them, spread unevenly over the 25 catalogued
+/// products. Three products have none at all, which is what makes a nullable
+/// average rating worth having. Since chapter 4 this list is the seed for a
+/// PostgreSQL table rather than the store itself.
 /// </summary>
-public sealed class InMemoryReviewsData
+public sealed class ReviewsSeedData
 {
     /// <summary>
     /// Reviews' own copy of Catalog's identifier pattern, and below it Accounts'.

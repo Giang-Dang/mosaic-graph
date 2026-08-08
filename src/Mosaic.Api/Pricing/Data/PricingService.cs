@@ -1,4 +1,6 @@
+using Microsoft.EntityFrameworkCore;
 using Mosaic.Api.Infrastructure;
+using Mosaic.Api.Infrastructure.Data;
 using Mosaic.Api.Pricing.Model;
 
 namespace Mosaic.Api.Pricing.Data;
@@ -11,13 +13,16 @@ namespace Mosaic.Api.Pricing.Data;
 /// There is no overload accepting a list of identifiers, which is deliberate
 /// and is what makes a nested query pay for one lookup per product.
 /// </remarks>
-public sealed class PricingService(InMemoryPricingData data, ServiceCallCounter counter)
+public sealed class PricingService(MosaicDbContext db, ServiceCallCounter counter)
 {
     public async Task<ProductPrice?> GetPriceByProductIdAsync(
         Guid productId,
         CancellationToken cancellationToken)
     {
-        await counter.RecordLookupAsync(cancellationToken);
-        return data.Prices.FirstOrDefault(p => p.ProductId == productId);
+        counter.RecordLookup();
+
+        return await db.Prices
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p => p.ProductId == productId, cancellationToken);
     }
 }
