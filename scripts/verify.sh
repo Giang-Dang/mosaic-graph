@@ -94,6 +94,12 @@ EXPECTED_RESOLVER_COUNT=146
 # in another.
 EXPECTED_SQL_COMMAND_COUNT=3
 
+# How many times the verify query is sent, and how far above the expected
+# number a single run is allowed to land. See the comment beside the repeat
+# loop: one split batch costs one extra statement and one extra lookup.
+VERIFY_QUERY_RUNS=5
+SPLIT_BATCH_ALLOWANCE=1
+
 API_PID=""
 TEMP_DIR=""
 API_LOG=""
@@ -541,6 +547,37 @@ if [ "$review_count" -ne "$EXPECTED_REVIEW_COUNT" ]; then
 fi
 step_ok "query returned $EXPECTED_PRODUCT_COUNT products and $EXPECTED_REVIEW_COUNT reviews"
 
+# The same query, four more times, because one sample is not enough to assert a
+# batching number against.
+#
+# A DataLoader batch is dispatched when the coordinator has seen it untouched
+# for the settle time across two evaluation rounds. Almost always the 120 author
+# resolvers all enqueue their keys inside that window and the batch goes once.
+# Occasionally - measured at two requests in four hundred on this machine - they
+# do not, the batch is dispatched with what it has, and the stragglers form a
+# second one. The answers are identical; the statement count is one higher.
+#
+# So the assertions below are: at least one of the five runs hit the batched
+# number exactly, and none of them exceeded it by more than a single split
+# batch. A service whose DataLoaders had been removed could satisfy neither.
+run=1
+while [ "$run" -lt "$VERIFY_QUERY_RUNS" ]; do
+    repeat_status="$(curl -sS -o "$TEMP_DIR/repeat.json" -w '%{http_code}' \
+        --max-time 120 \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/json' \
+        --data-binary "@$TEMP_DIR/request.json" \
+        "$BASE_URL/graphql")"
+
+    if [ "$repeat_status" != "200" ]; then
+        step_fail 'graphql query' "Run $((run + 1)) of the query answered $repeat_status.
+
+$(cat "$TEMP_DIR/repeat.json" 2>/dev/null)"
+    fi
+
+    run=$((run + 1))
+done
+
 # -- 6. the lookup count ----------------------------------------------------
 
 # The middleware logs the total after the response has been written, so the line
@@ -578,6 +615,16 @@ and 3 and at tag ch04-ef. If it moved, either a DataLoader stopped batching or
 a resolver went back to asking a service directly."
         ;;
 esac
+
+lookup_ceiling=$((EXPECTED_LOOKUP_COUNT + SPLIT_BATCH_ALLOWANCE))
+for count in $logged_counts; do
+    if [ "$count" -gt "$lookup_ceiling" ]; then
+        step_fail 'lookup count' "One of the runs asked for more than $lookup_ceiling lookups: $logged_counts
+
+A single split batch costs one extra lookup and is expected now and again. More
+than that is a resolver that is not going through a DataLoader at all."
+    fi
+done
 
 # -- 6b. the request pipeline -----------------------------------------------
 
@@ -669,6 +716,16 @@ per row. If it went down, something started batching, and the chapter that
 claims otherwise needs rewriting."
         ;;
 esac
+
+sql_ceiling=$((EXPECTED_SQL_COMMAND_COUNT + SPLIT_BATCH_ALLOWANCE))
+for count in $logged_sql; do
+    if [ "$count" -gt "$sql_ceiling" ]; then
+        step_fail 'sql command count' "One of the runs sent more than $sql_ceiling statements: $logged_sql
+
+A single split batch costs one extra statement and is expected now and again.
+More than that is an N+1 growing back."
+    fi
+done
 
 # -- 7. the postman collection ----------------------------------------------
 

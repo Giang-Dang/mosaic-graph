@@ -98,6 +98,12 @@ $ExpectedLookupCount  = 3
 # in another.
 $ExpectedSqlCommandCount = 3
 
+# How many times the verify query is sent, and how far above the expected
+# number a single run is allowed to land. See the comment beside the repeat
+# loop: one split batch costs one extra statement and one extra lookup.
+$VerifyQueryRuns = 5
+$SplitBatchAllowance = 1
+
 # The request pipeline HotChocolate assembles for this service, in order. Twelve
 # of these come from the default pipeline; CostAnalyzerMiddleware is inserted
 # after DocumentValidationMiddleware by the cost analyzer that AddGraphQLServer
@@ -586,6 +592,38 @@ try {
     }
     Write-Ok "query returned $ExpectedProductCount products and $ExpectedReviewCount reviews"
 
+    # The same query, four more times, because one sample is not enough to
+    # assert a batching number against.
+    #
+    # A DataLoader batch is dispatched when the coordinator has seen it
+    # untouched for the settle time across two evaluation rounds. Almost always
+    # the 120 author resolvers all enqueue their keys inside that window and the
+    # batch goes once. Occasionally - measured at two requests in four hundred
+    # on this machine - they do not, the batch is dispatched with what it has,
+    # and the stragglers form a second one. The answers are identical; the
+    # statement count is one higher.
+    #
+    # So the assertions below are: at least one of the five runs hit the
+    # batched number exactly, and none of them exceeded it by more than a
+    # single split batch. A service whose DataLoaders had been removed could
+    # satisfy neither.
+    for ($i = 1; $i -lt $VerifyQueryRuns; $i++) {
+        $repeat = Invoke-WebRequest `
+            -Uri "$BaseUrl/graphql" `
+            -Method Post `
+            -ContentType 'application/json' `
+            -Headers @{ Accept = 'application/json' } `
+            -Body $requestBody `
+            -TimeoutSec 120 `
+            -SkipHttpErrorCheck
+
+        if ($repeat.StatusCode -ne 200) {
+            Stop-Verify 'graphql query' (Join-Lines @(
+                "Run $($i + 1) of the query answered $($repeat.StatusCode)."
+                $repeat.Content))
+        }
+    }
+
     # -- 6. the lookup count -----------------------------------------------
 
     # The middleware logs the total after the response has been written, so the
@@ -619,6 +657,17 @@ try {
             'for every review on it, and one for their authors. It was 146 through'
             'chapters 2 and 3 and at tag ch04-ef. If it moved, either a DataLoader'
             'stopped batching or a resolver went back to asking a service directly.'))
+    }
+
+    $lookupCeiling = $ExpectedLookupCount + $SplitBatchAllowance
+    $tooManyLookups = @($loggedCounts | Where-Object { [int] $_ -gt $lookupCeiling })
+    if ($tooManyLookups.Count -gt 0) {
+        Stop-Verify 'lookup count' (Join-Lines @(
+            "One of the runs asked for more than $lookupCeiling lookups: $($loggedCounts -join ', ')."
+            ''
+            'A single split batch costs one extra lookup and is expected now and'
+            'again. More than that is a resolver that is not going through a'
+            'DataLoader at all.'))
     }
     Write-Ok "service logged 'Service lookups this request: $ExpectedLookupCount'"
 
@@ -720,6 +769,16 @@ try {
             'This is the number chapter 4 is about. If it went up, something started'
             'querying per row. If it went down, something started batching, and the'
             'chapter that claims otherwise needs rewriting.'))
+    }
+
+    $sqlCeiling = $ExpectedSqlCommandCount + $SplitBatchAllowance
+    $tooManyCommands = @($loggedSql | Where-Object { [int] $_ -gt $sqlCeiling })
+    if ($tooManyCommands.Count -gt 0) {
+        Stop-Verify 'sql command count' (Join-Lines @(
+            "One of the runs sent more than $sqlCeiling statements: $($loggedSql -join ', ')."
+            ''
+            'A single split batch costs one extra statement and is expected now and'
+            'again. More than that is an N+1 growing back.'))
     }
     Write-Ok "request timeline reported $ExpectedSqlCommandCount SQL commands"
 
