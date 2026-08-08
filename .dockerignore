@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+.git/
+.github/
+node_modules/
+artifacts/
+postman/
+scripts/
+schema/
+samples/
+*.md

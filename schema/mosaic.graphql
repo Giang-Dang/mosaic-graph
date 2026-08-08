@@ -1,0 +1,84 @@
+schema {
+  query: Query
+}
+
+type Query {
+  customerById(id: ID!): Customer @cost(weight: "10")
+  products: [Product!]! @cost(weight: "10")
+  productById(id: ID!): Product @cost(weight: "10")
+  productBySku(sku: String!): Product @cost(weight: "10")
+  ordersByCustomer(customerId: ID!): [Order!]! @cost(weight: "10")
+}
+
+type Customer {
+  id: ID!
+  displayName: String!
+  email: String!
+}
+
+type Money {
+  amount: Decimal!
+  currency: String!
+}
+
+type Order {
+  id: ID!
+  customer: Customer! @cost(weight: "10")
+  total: Money!
+  placedAt: DateTime!
+  lines: [OrderLine!]!
+}
+
+type OrderLine {
+  product: Product! @cost(weight: "10")
+  quantity: Int!
+  unitPrice: Money!
+}
+
+type Product {
+  id: ID!
+  availableQuantity: Int! @cost(weight: "10")
+  price: Money! @cost(weight: "10")
+  reviews: [Review!]! @cost(weight: "10")
+  averageRating: Float @cost(weight: "10")
+  sku: String!
+  title: String!
+  description: String
+  category: ProductCategory!
+}
+
+type Review {
+  id: ID!
+  author: Customer! @cost(weight: "10")
+  rating: Int!
+  body: String
+  createdAt: DateTime!
+}
+
+enum ProductCategory {
+  FURNITURE
+  LIGHTING
+  KITCHEN
+  TEXTILES
+  STORAGE
+}
+
+"The `DateTime` scalar type represents a date and time with time zone offset information."
+scalar DateTime
+  @specifiedBy(url: "https://scalars.graphql.org/chillicream/date-time.html")
+
+"The `Decimal` scalar type represents a decimal floating-point number with high precision."
+scalar Decimal
+  @specifiedBy(url: "https://scalars.graphql.org/chillicream/decimal.html")
+
+"The purpose of the `cost` directive is to define a `weight` for GraphQL types, fields, and arguments. Static analysis can use these weights when calculating the overall cost of a query or response."
+directive @cost(
+  "The `weight` argument defines what value to add to the overall cost for every appearance, or possible appearance, of a type, field, argument, etc."
+  weight: String!
+) on
+  | SCALAR
+  | OBJECT
+  | FIELD_DEFINITION
+  | ARGUMENT_DEFINITION
+  | ENUM
+  | INPUT_FIELD_DEFINITION

@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Mosaic.Api/Mosaic.Api.csproj" />
+  </Folder>
+</Solution>

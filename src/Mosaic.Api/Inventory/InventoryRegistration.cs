@@ -1,0 +1,13 @@
+using Mosaic.Api.Inventory.Data;
+
+namespace Mosaic.Api.Inventory;
+
+public static class InventoryRegistration
+{
+    public static IServiceCollection AddInventoryDomain(this IServiceCollection services)
+    {
+        services.AddSingleton<InMemoryInventoryData>();
+        services.AddScoped<InventoryService>();
+        return services;
+    }
+}

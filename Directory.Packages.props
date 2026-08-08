@@ -1,0 +1,20 @@
+<Project>
+
+  <!-- Central package management. Every HotChocolate package is pinned to one
+       exact version on purpose: a book cannot afford a patch release changing
+       generated code between chapters. Bumping the version is a deliberate act
+       that ends with re-running scripts/verify.ps1. -->
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+    <HotChocolateVersion>16.6.0</HotChocolateVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="HotChocolate.AspNetCore" Version="$(HotChocolateVersion)" />
+    <PackageVersion Include="HotChocolate.AspNetCore.CommandLine" Version="$(HotChocolateVersion)" />
+    <PackageVersion Include="HotChocolate.Types.Analyzers" Version="$(HotChocolateVersion)" />
+  </ItemGroup>
+
+</Project>
