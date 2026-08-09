@@ -114,6 +114,16 @@ ROUTER_POSTMAN="$REPO_ROOT/postman/mosaic-router.postman_collection.json"
 ROUTER_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-router.local.postman_environment.json"
 ROUTER_CASES="$REPO_ROOT/scripts/router-cases.mjs"
 
+# -- chapter 11's entity resolution ------------------------------------------
+
+# Both of these run inside the router section, because @requires and @provides
+# are only visible once something is planning across two services. The cases
+# script starts the sample under samples/entity-resolution on ports of its own,
+# so nothing here has to know about it.
+ENTITIES_POSTMAN="$REPO_ROOT/postman/mosaic-entities.postman_collection.json"
+ENTITIES_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-entities.local.postman_environment.json"
+ENTITY_CASES="$REPO_ROOT/scripts/entity-cases.mjs"
+
 # The two subgraphs since chapter 8, written as <name>:<port>. Both files under
 # schema/ are what `_service { sdl }` returns, which is what a composer reads,
 # so checking them is a check on the federated contract and not only on the SDL.
@@ -1627,6 +1637,59 @@ One of the three router behaviours chapter 10 describes has changed. The output
 above says which. Fix the chapter, not the assertion.'
             fi
             step_ok 'the router behaves the three ways chapter 10 says it does'
+        fi
+
+        # -- chapter 11 -----------------------------------------------------
+
+        # What the second hop costs. This collection needs the router and both
+        # subgraphs at once, which is why it runs here rather than beside the
+        # subgraph collection above: two of its five requests go straight to a
+        # service, to ask it something the router will not.
+        if [ ! -f "$ENTITIES_POSTMAN" ] || [ ! -f "$ENTITIES_POSTMAN_ENV" ]; then
+            step_skip 'entities postman' 'the entities collection or its environment is missing from postman/'
+        elif [ -z "$NEWMAN_BIN" ]; then
+            step_skip 'entities postman' 'newman is not installed - run npm install first'
+        else
+            if [ "$NEWMAN_VIA_NPX" -eq 1 ]; then
+                "$NEWMAN_BIN" --no newman run "$ENTITIES_POSTMAN" \
+                    --environment "$ENTITIES_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --env-var "mosaicUrl=$BASE_URL" \
+                    --env-var "catalogUrl=$CATALOG_SUBGRAPH_URL" \
+                    --bail
+            else
+                "$NEWMAN_BIN" run "$ENTITIES_POSTMAN" \
+                    --environment "$ENTITIES_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --env-var "mosaicUrl=$BASE_URL" \
+                    --env-var "catalogUrl=$CATALOG_SUBGRAPH_URL" \
+                    --bail
+            fi
+            if [ $? -ne 0 ]; then
+                step_fail 'entities postman' 'newman failed; its output above says which request failed.
+Product.shippingCost is the first field in Mosaic that cannot be answered
+without the other service, and the plan assertions are the listing chapter 11
+prints.'
+            fi
+            step_ok 'a field that needs the other service is answered, and its plan says so'
+        fi
+
+        # Eleven cases: three composition, one against Mosaic through _entities,
+        # and seven on the sample under samples/entity-resolution, which that
+        # script starts and stops itself. Same arrangement as chapters 9 and 10
+        # and for the same reason: one implementation, both verify scripts.
+        if [ ! -f "$ENTITY_CASES" ]; then
+            step_skip 'entity cases' 'scripts/entity-cases.mjs does not exist yet'
+        elif ! command -v node >/dev/null 2>&1; then
+            step_fail 'entity cases' 'node is not on PATH; it is needed to run scripts/entity-cases.mjs.'
+        else
+            node "$ENTITY_CASES"
+            if [ $? -ne 0 ]; then
+                step_fail 'entity cases' 'scripts/entity-cases.mjs failed.
+One of the entity-resolution behaviours chapter 11 describes has changed. The
+output above says which. Fix the chapter, not the assertion.'
+            fi
+            step_ok 'entities resolve the eleven ways chapter 11 says they do'
         fi
 
         # Down rather than stop, and now rather than in the trap, because the

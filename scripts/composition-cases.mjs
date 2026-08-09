@@ -126,11 +126,19 @@ const CASES = [
     // (ProductFilterInput), which is the condition the composer's advice is
     // about. Mosaic declaring a shorter copy is how an enum drifts in practice:
     // somebody adds a member on one side of a cut.
+    //
+    // Until chapter 11 this case had to invent Mosaic's copy, because Mosaic
+    // had no reason to declare the enum at all. It has one now - the
+    // @external category that Product.shippingCost requires - so the case
+    // shortens the real declaration rather than adding a second one. Adding
+    // one now produces a different error entirely, about a type defined twice
+    // in one document, which is a fact about the edit rather than about
+    // federation.
     edits: [
       {
         file: 'mosaic',
-        from: 'type Product @key(fields: "id") {',
-        to: 'enum ProductCategory {\n  FURNITURE\n  LIGHTING\n  KITCHEN\n}\n\ntype Product @key(fields: "id") {',
+        from: 'enum ProductCategory {\n  FURNITURE\n  LIGHTING\n  KITCHEN\n  TEXTILES\n  STORAGE\n}',
+        to: 'enum ProductCategory {\n  FURNITURE\n  LIGHTING\n  KITCHEN\n}',
       },
     ],
     expect: [

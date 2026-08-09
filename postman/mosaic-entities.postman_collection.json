@@ -1,0 +1,361 @@
+{
+  "info": {
+    "_postman_id": "9c4d1f77-2b58-4a03-9e6d-4f81c05a7b32",
+    "name": "Mosaic entities - chapter 11",
+    "description": "What the second hop actually costs, as chapter 11 of Federated GraphQL on .NET measures it.\n\nThree of these go to the router and two go to a subgraph directly, because the whole subject is the difference. @requires is only visible in a query plan; what a subgraph does with a representation is only visible when you send it one yourself.\n\nStart the two subgraphs and the router before running it:\n\n    docker compose up -d mosaic-db\n    dotnet run --project src/Mosaic.Catalog\n    dotnet run --project src/Mosaic.Api\n    docker compose up -d mosaic-router\n\nNothing here writes, so the collection can be run twice against the same processes.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "The field that needs the other service",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const nodes = body.data.browseProducts.nodes;",
+              "",
+              "pm.test(\"twenty-five products\", function () {",
+              "    pm.expect(nodes).to.have.lengthOf(25);",
+              "});",
+              "",
+              "// The rates Pricing applies, which is the half of the answer this",
+              "// service owns. Nothing asserts them one by one: what matters is that",
+              "// each product got the rate for its own category, and the category is",
+              "// the half it does not own.",
+              "const RATES = { FURNITURE: 39, LIGHTING: 9.9, STORAGE: 7.9, KITCHEN: 5.9, TEXTILES: 4.9 };",
+              "",
+              "pm.test(\"every product is priced for delivery by its category\", function () {",
+              "    for (const node of nodes) {",
+              "        const rate = RATES[node.category];",
+              "        pm.expect(rate, `no rate for ${node.category}`).to.be.a(\"number\");",
+              "        const waived = node.category !== \"FURNITURE\" && node.price.amount >= 100;",
+              "        pm.expect(node.shippingCost.amount, node.title).to.eql(waived ? 0 : rate);",
+              "        pm.expect(node.shippingCost.currency).to.eql(node.price.currency);",
+              "    }",
+              "});",
+              "",
+              "// Both branches have to appear, or the assertion above is satisfied by",
+              "// a rule nobody exercised.",
+              "pm.test(\"some ship free and some do not\", function () {",
+              "    const free = nodes.filter((n) => n.shippingCost.amount === 0);",
+              "    pm.expect(free.length, \"products shipping free\").to.be.above(0);",
+              "    pm.expect(free.length, \"products shipping free\").to.be.below(nodes.length);",
+              "});",
+              "",
+              "// Furniture is the exception the rule exists to have: a pallet costs",
+              "// what a pallet costs, however expensive the sofa on it was.",
+              "pm.test(\"furniture never ships free\", function () {",
+              "    const furniture = nodes.filter((n) => n.category === \"FURNITURE\");",
+              "    pm.expect(furniture.length, \"furniture in the catalogue\").to.be.above(0);",
+              "    for (const node of furniture) {",
+              "        pm.expect(node.shippingCost.amount, node.title).to.eql(39);",
+              "    }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"query\": \"{\\n  browseProducts(first: 25) {\\n    nodes {\\n      title\\n      category\\n      price { amount currency }\\n      shippingCost { amount currency }\\n    }\\n  }\\n}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "The plan that stopped being uniform",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const plan = pm.response.json().extensions.queryPlan;",
+              "const first = plan.children[0].fetch;",
+              "const second = plan.children[1].fetch;",
+              "",
+              "pm.test(\"still two fetches\", function () {",
+              "    pm.expect(plan.children).to.have.lengthOf(2);",
+              "    pm.expect(first.subgraphName).to.eql(\"catalog\");",
+              "    pm.expect(second.subgraphName).to.eql(\"mosaic\");",
+              "});",
+              "",
+              "// The client asked for a title and a shipping cost. Catalog is being",
+              "// asked for a category as well, because Mosaic cannot work one out.",
+              "pm.test(\"catalog is asked for a field the client did not want\", function () {",
+              "    pm.expect(first.query).to.include(\"category\");",
+              "    pm.expect(pm.request.body.raw).to.not.include(\"category\");",
+              "});",
+              "",
+              "// Chapter 10 had four dependencies that all said the same thing. This",
+              "// is the first one that does not.",
+              "pm.test(\"shippingCost depends on two different things\", function () {",
+              "    const shipping = second.dependencies.find((d) => d.coordinate.fieldName === \"shippingCost\");",
+              "    pm.expect(shipping, \"a dependency for shippingCost\").to.not.be.undefined;",
+              "    const key = shipping.dependsOn.filter((d) => d.isKey);",
+              "    const required = shipping.dependsOn.filter((d) => d.isRequires);",
+              "    pm.expect(key).to.have.lengthOf(1);",
+              "    pm.expect(key[0].coordinate.fieldName).to.eql(\"id\");",
+              "    pm.expect(required).to.have.lengthOf(1);",
+              "    pm.expect(required[0].coordinate.fieldName).to.eql(\"category\");",
+              "    pm.expect(required[0].subgraph).to.eql(\"catalog\");",
+              "});",
+              "",
+              "// And the router says so twice: once in the dependency, once in the",
+              "// fragment it will use to build each representation.",
+              "pm.test(\"the representations carry the required field as well as the key\", function () {",
+              "    const kinds = second.representations.map((r) => r.kind).sort();",
+              "    pm.expect(kinds).to.eql([\"@key\", \"@requires\"]);",
+              "    const requires = second.representations.find((r) => r.kind === \"@requires\");",
+              "    pm.expect(requires.fieldName).to.eql(\"shippingCost\");",
+              "    pm.expect(requires.fragment).to.include(\"category\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-WG-Include-Query-Plan",
+            "value": "true"
+          },
+          {
+            "key": "X-WG-Skip-Loader",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"query\": \"{ browseProducts(first: 3) { nodes { title shippingCost { amount } } } }\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Three keys out of the catalog",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const nodes = pm.response.json().data.browseProducts.nodes;",
+              "",
+              "pm.test(\"three products with a category each\", function () {",
+              "    pm.expect(nodes).to.have.lengthOf(3);",
+              "    for (const node of nodes) {",
+              "        pm.expect(node.id).to.be.a(\"string\").and.not.empty;",
+              "        pm.expect(node.category).to.be.a(\"string\").and.not.empty;",
+              "    }",
+              "});",
+              "",
+              "// The next request builds representations by hand, the way the router",
+              "// would, except that the middle one is missing its category.",
+              "pm.collectionVariables.set(\"representations\", JSON.stringify(nodes.map((node, index) => (",
+              "    index === 1",
+              "        ? { __typename: \"Product\", id: node.id }",
+              "        : { __typename: \"Product\", id: node.id, category: node.category }",
+              "))));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"query\": \"{ browseProducts(first: 3) { nodes { id category } } }\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{catalogUrl}}/graphql",
+          "host": [
+            "{{catalogUrl}}/graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "A representation with no category",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Sent straight to the subgraph, because the router cannot be made to",
+              "// do this: it fetches the required field before it calls, every time.",
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "const entities = body.data._entities;",
+              "",
+              "pm.test(\"three representations, three slots\", function () {",
+              "    pm.expect(entities).to.have.lengthOf(3);",
+              "});",
+              "",
+              "// The one that could not be answered, and only that one. A batch is",
+              "// not all-or-nothing at this layer.",
+              "pm.test(\"the representation with no category is null and its neighbours are not\", function () {",
+              "    pm.expect(entities[1], \"the middle entity\").to.be.null;",
+              "    pm.expect(entities[0].shippingCost.amount).to.be.a(\"number\");",
+              "    pm.expect(entities[2].shippingCost.amount).to.be.a(\"number\");",
+              "});",
+              "",
+              "pm.test(\"the error names the position in the batch\", function () {",
+              "    pm.expect(body.errors, \"an error was reported\").to.have.lengthOf(1);",
+              "    pm.expect(body.errors[0].path).to.eql([\"_entities\", 1, \"shippingCost\"]);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"query\": \"query($representations: [_Any!]!) {\\n  _entities(representations: $representations) {\\n    ... on Product { __typename shippingCost { amount currency } }\\n  }\\n}\",\n  \"variables\": {\n    \"representations\": {{representations}}\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}/graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "The field Catalog does not have",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Ownership, stated by the service that does not own it. shippingCost",
+              "// is on the Product type of the composed graph and of exactly one of",
+              "// the two subgraphs.",
+              "pm.test(\"rejected at validation\", function () {",
+              "    pm.response.to.have.status(400);",
+              "});",
+              "",
+              "pm.test(\"Catalog has never heard of it\", function () {",
+              "    const errors = pm.response.json().errors;",
+              "    pm.expect(errors).to.have.lengthOf(1);",
+              "    pm.expect(errors[0].message).to.include(\"shippingCost\");",
+              "    pm.expect(errors[0].message).to.include(\"Product\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"query\": \"{ browseProducts(first: 1) { nodes { shippingCost { amount } } } }\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{catalogUrl}}/graphql",
+          "host": [
+            "{{catalogUrl}}/graphql"
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "representations",
+      "value": ""
+    }
+  ]
+}

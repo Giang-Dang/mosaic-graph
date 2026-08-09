@@ -50,6 +50,43 @@ public sealed class Product
     public required Guid Id { get; init; }
 
     /// <summary>
+    /// Catalog's category, which this service does not own and cannot look up.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>[External]</c> publishes the field and disclaims it in the same
+    /// breath: the type is part of this subgraph's schema so that
+    /// <c>@requires(fields: "category")</c> has something to name, and the
+    /// directive tells the composer this is not a place the value can be got
+    /// from. Ask the router for <c>Product.category</c> and it goes to Catalog.
+    /// Nothing routes here for it.
+    /// </para>
+    /// <para>
+    /// The property has a setter, which is the part that is easy to get wrong.
+    /// Nothing in this service ever assigns it. HotChocolate does, after the
+    /// reference resolver has returned, by copying values out of the
+    /// representation into the object that resolver built. A get-only property
+    /// compiles, composes, and answers null for every product.
+    /// </para>
+    /// <para>
+    /// The two nullabilities disagree on purpose, and each is right about a
+    /// different thing. In the schema the field is <c>ProductCategory!</c>,
+    /// because that is what Catalog says and an <c>@external</c> declaration is
+    /// a copy of somebody else's contract: composition merges the two
+    /// declarations and takes the more permissive nullability, so a nullable
+    /// copy here would quietly make the field nullable for every client of the
+    /// whole graph. In C# the property is nullable, because most
+    /// representations carry no category at all - the router sends one only
+    /// when the query reached a field that asked for it - and a non-nullable
+    /// enum would report <c>FURNITURE</c> for absent, zero being a value of
+    /// every C# enum.
+    /// </para>
+    /// </remarks>
+    [External]
+    [GraphQLNonNullType]
+    public ProductCategory? Category { get; set; }
+
+    /// <summary>
     /// Builds a product from the key another subgraph holds.
     /// </summary>
     /// <remarks>

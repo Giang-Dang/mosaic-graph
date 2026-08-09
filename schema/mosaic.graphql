@@ -1,7 +1,7 @@
 schema
   @link(
     url: "https://specs.apollo.dev/federation/v2.6"
-    import: ["@key", "@shareable", "@tag", "FieldSet"]
+    import: ["@external", "@key", "@requires", "@shareable", "@tag", "FieldSet"]
   ) {
   query: Query
   mutation: Mutation
@@ -85,6 +85,7 @@ type PageInfo {
 type Product @key(fields: "id") {
   availableQuantity: Int!
   price: Money!
+  shippingCost: Money! @requires(fields: "category")
   reviews(
     "Returns the first _n_ elements from the list."
     first: Int
@@ -97,6 +98,7 @@ type Product @key(fields: "id") {
   ): ReviewConnection!
   averageRating: Float
   id: ID!
+  category: ProductCategory! @external
 }
 
 type RatingOutOfRangeError implements Error {
@@ -168,6 +170,14 @@ input SubmitReviewInput {
   body: String
 }
 
+enum ProductCategory {
+  FURNITURE
+  LIGHTING
+  KITCHEN
+  TEXTILES
+  STORAGE
+}
+
 "The `DateTime` scalar type represents a date and time with time zone offset information."
 scalar DateTime
   @specifiedBy(url: "https://scalars.graphql.org/chillicream/date-time.html")
@@ -182,6 +192,9 @@ scalar FieldSet
 "The _Any scalar is used to pass representations of entities from external services into the root _entities field for execution. Validation of the _Any scalar is done by matching the __typename and @external fields defined in the schema."
 scalar _Any
 
+"Directive to indicate that a field is owned by another service, for example via Apollo federation."
+directive @external on OBJECT | FIELD_DEFINITION
+
 "Used to indicate a combination of fields that can be used to uniquely identify and fetch an object or interface."
 directive @key(fields: FieldSet!, resolvable: Boolean = true) repeatable on
   | OBJECT
@@ -194,6 +207,9 @@ directive @link(
   "Gets optional list of imported element names."
   import: [String!]
 ) repeatable on SCHEMA
+
+"Used to annotate the required input fieldset from a base type for a resolver."
+directive @requires(fields: FieldSet!) on FIELD_DEFINITION
 
 "Indicates that given object and/or field can be resolved by multiple subgraphs."
 directive @shareable repeatable on OBJECT | FIELD_DEFINITION

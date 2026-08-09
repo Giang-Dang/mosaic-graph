@@ -26,6 +26,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | `ch08` | 8. The First Cut: Extracting Catalog | Two services. `Mosaic.Catalog` on 5101 owns `Product`; Mosaic on 5100 keeps the other five domains and contributes `price`, `availableQuantity`, `reviews` and `averageRating` to the same type. Both are federation subgraphs |
 | `ch09` | 9. Composition | Neither service changes by a line. The composed router execution config is committed at `federation/supergraph.json`, and `scripts/composition-cases.mjs` produces five composition errors on purpose, each one the real pair of schemas with a single edit applied |
 | `ch10` | 10. Enter the Router | Neither service changes by a line again. The Cosmo Router joins `docker-compose.yml` with a `router/config.yaml` of its own, and the storefront query answers for the first time since chapter 8 |
+| `ch11` | 11. Entity Resolution Done Right | `Product.shippingCost`, the first field in Mosaic that needs something Catalog owns, declared `@requires(fields: "category")`. Plus `samples/entity-resolution`, where a reference resolver writes down every call the router makes to it and `@provides` is caught both saving a round trip and telling a lie |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an

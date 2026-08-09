@@ -23,6 +23,11 @@ TestResults/
 # verify.ps1 recomposes and compares. Chapter 7 prints nothing out of its one.
 samples/federated-wire/supergraph.json
 
+# Chapter 11's sample, for the same reason: the chapter prints query plans the
+# router built from this file and never the file itself. scripts/entity-cases.mjs
+# composes a copy of its own anyway, routed at ports no launch profile uses.
+samples/entity-resolution/supergraph.json
+
 # Chapter 9's lab composes here, so that a reader trying things out never has
 # git status telling them they have changed the committed config.
 federation/scratch.json

@@ -141,6 +141,16 @@ $RouterPostmanEnv = Join-Path $RepoRoot 'postman' 'mosaic-router.local.postman_e
 $RouterCases      = Join-Path $RepoRoot 'scripts' 'router-cases.mjs'
 $MosaicRouterUrl  = "http://localhost:$RouterPort"
 
+# -- chapter 11's entity resolution ------------------------------------------
+
+# Both of these run inside the router section, because @requires and @provides
+# are only visible once something is planning across two services. The cases
+# script starts the sample under samples/entity-resolution on ports of its own,
+# so nothing here has to know about it.
+$EntitiesPostman    = Join-Path $RepoRoot 'postman' 'mosaic-entities.postman_collection.json'
+$EntitiesPostmanEnv = Join-Path $RepoRoot 'postman' 'mosaic-entities.local.postman_environment.json'
+$EntityCases        = Join-Path $RepoRoot 'scripts' 'entity-cases.mjs'
+
 # -- chapter 7's federated-wire sample ---------------------------------------
 
 $WireDir            = Join-Path $RepoRoot 'samples' 'federated-wire'
@@ -1434,6 +1444,55 @@ try {
                         'The output above says which. Fix the chapter, not the assertion.'))
                 }
                 Write-Ok 'the router behaves the three ways chapter 10 says it does'
+            }
+
+            # -- chapter 11 -------------------------------------------------
+
+            # What the second hop costs. This collection needs the router and
+            # both subgraphs at once, which is why it runs here rather than
+            # beside the subgraph collection above: two of its five requests go
+            # straight to a service, to ask it something the router will not.
+            if (-not (Test-Path -LiteralPath $EntitiesPostman) -or -not (Test-Path -LiteralPath $EntitiesPostmanEnv)) {
+                Write-Skipped 'entities postman' 'the entities collection or its environment is missing from postman/'
+            } elseif (-not $newmanCommand) {
+                Write-Skipped 'entities postman' 'newman is not installed - run npm install first'
+            } else {
+                & $newmanCommand @($newmanPrefix + @(
+                    'run', $EntitiesPostman,
+                    '--environment', $EntitiesPostmanEnv,
+                    '--env-var', "routerUrl=$MosaicRouterUrl",
+                    '--env-var', "mosaicUrl=$BaseUrl",
+                    '--env-var', "catalogUrl=$CatalogSubgraphUrl",
+                    '--bail'))
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'entities postman' (Join-Lines @(
+                        "newman exited with $LASTEXITCODE; its output above says which request failed."
+                        'Product.shippingCost is the first field in Mosaic that cannot be'
+                        'answered without the other service, and the plan assertions are the'
+                        'listing chapter 11 prints.'))
+                }
+                Write-Ok 'a field that needs the other service is answered, and its plan says so'
+            }
+
+            # Eleven cases: three composition, one against Mosaic's _entities,
+            # and seven on the sample under samples/entity-resolution, which
+            # that script starts and stops itself. Same arrangement as chapters
+            # 9 and 10 and for the same reason: one implementation, called by
+            # both verify scripts.
+            if (-not (Test-Path -LiteralPath $EntityCases)) {
+                Write-Skipped 'entity cases' 'scripts/entity-cases.mjs does not exist yet'
+            } elseif (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+                Stop-Verify 'entity cases' 'node is not on PATH; it is needed to run scripts/entity-cases.mjs.'
+            } else {
+                & node $EntityCases
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'entity cases' (Join-Lines @(
+                        "scripts/entity-cases.mjs exited with $LASTEXITCODE."
+                        'One of the entity-resolution behaviours chapter 11 describes has'
+                        'changed. The output above says which. Fix the chapter, not the'
+                        'assertion.'))
+                }
+                Write-Ok 'entities resolve the eleven ways chapter 11 says they do'
             }
 
             # Down rather than stop, and now rather than in the finally block,

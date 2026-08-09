@@ -2,7 +2,7 @@
   "name": "mosaic-graph",
   "version": "0.0.0",
   "private": true,
-  "description": "Verification harness for the Mosaic GraphQL service. The service itself is .NET; node is here to run the Postman collections, to compose the supergraph since chapter 7, and to run chapter 9's composition cases.",
+  "description": "Verification harness for the Mosaic GraphQL service. The service itself is .NET; node is here to run the Postman collections, to compose the supergraph since chapter 7, and to run the chapter case scripts under scripts/.",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=16"
@@ -11,6 +11,8 @@
     "verify": "pwsh scripts/verify.ps1",
     "verify:postman": "newman run postman/mosaic-federation.postman_collection.json --environment postman/mosaic-federation.local.postman_environment.json --bail",
     "verify:composition": "node scripts/composition-cases.mjs",
+    "verify:router": "node scripts/router-cases.mjs",
+    "verify:entities": "node scripts/entity-cases.mjs",
     "compose": "wgc router compose -i federation/mosaic.yaml -o federation/supergraph.json"
   },
   "devDependencies": {

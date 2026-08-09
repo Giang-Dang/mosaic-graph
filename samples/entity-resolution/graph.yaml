@@ -1,0 +1,27 @@
+# The composer's input for chapter 11's sample: two subgraphs that share a
+# Widget, one of which owns it and one of which only ever holds one.
+#
+#   npx wgc router compose -i samples/entity-resolution/graph.yaml \
+#                          -o samples/entity-resolution/supergraph.json
+#
+# Composed from the committed schema files rather than by introspection, which
+# is what chapter 7's sample does too and for the same reason: the file is what
+# a composer would be given in a pipeline, and a drift between it and the
+# running service is something the gate should catch rather than paper over.
+#
+# The routing URLs say host.docker.internal because the router runs in a
+# container and both subgraphs run on the host. Change them to localhost if you
+# run the router as a binary instead.
+
+version: 1
+
+subgraphs:
+  - name: catalog
+    routing_url: http://host.docker.internal:5205/graphql
+    schema:
+      file: ../../schema/samples/entities-catalog.graphql
+
+  - name: crates
+    routing_url: http://host.docker.internal:5206/graphql
+    schema:
+      file: ../../schema/samples/entities-crates.graphql
