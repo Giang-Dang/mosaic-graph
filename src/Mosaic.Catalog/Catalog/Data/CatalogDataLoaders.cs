@@ -1,7 +1,7 @@
 using GreenDonut;
-using Mosaic.Api.Catalog.Model;
+using Mosaic.Catalog.Model;
 
-namespace Mosaic.Api.Catalog.Data;
+namespace Mosaic.Catalog.Data;
 
 /// <summary>
 /// Catalog's DataLoaders.

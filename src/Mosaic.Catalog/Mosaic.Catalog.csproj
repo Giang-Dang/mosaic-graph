@@ -4,13 +4,17 @@
        from Directory.Build.props. Package versions come from
        Directory.Packages.props. -->
 
+  <!-- The same list Mosaic.Api carries, minus the two things Catalog has no
+       use for - subscriptions, which belong to Reviews - and plus the one it
+       does: HotChocolate.ApolloFederation. That package is what turns an
+       ordinary GraphQL service into a subgraph. -->
+
   <ItemGroup>
     <PackageReference Include="HotChocolate.AspNetCore" />
     <PackageReference Include="HotChocolate.AspNetCore.CommandLine" />
     <PackageReference Include="HotChocolate.ApolloFederation" />
     <PackageReference Include="HotChocolate.Data" />
     <PackageReference Include="HotChocolate.Data.EntityFramework" />
-    <PackageReference Include="HotChocolate.Subscriptions.InMemory" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="HotChocolate.Types.Analyzers">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

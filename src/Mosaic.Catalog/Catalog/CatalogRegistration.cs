@@ -1,6 +1,6 @@
-using Mosaic.Api.Catalog.Data;
+using Mosaic.Catalog.Data;
 
-namespace Mosaic.Api.Catalog;
+namespace Mosaic.Catalog;
 
 public static class CatalogRegistration
 {

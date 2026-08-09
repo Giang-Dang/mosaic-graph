@@ -29,8 +29,8 @@
          providers exist for the multi-instance case chapter 14 deals with. -->
     <PackageVersion Include="HotChocolate.Subscriptions.InMemory" Version="$(HotChocolateVersion)" />
 
-    <!-- Chapter 7's federated-wire sample. Mosaic itself does not reference
-         this yet; chapter 8 is where the real subgraphs arrive. -->
+    <!-- Chapter 7's federated-wire sample, and since chapter 8 both real
+         subgraphs: Mosaic.Catalog and what is left of Mosaic.Api. -->
     <PackageVersion Include="HotChocolate.ApolloFederation" Version="$(HotChocolateVersion)" />
   </ItemGroup>
 

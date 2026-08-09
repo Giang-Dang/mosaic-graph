@@ -1,6 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using Mosaic.Api.Accounts.Model;
-using Mosaic.Api.Catalog.Model;
 using Mosaic.Api.Inventory.Model;
 using Mosaic.Api.Ordering.Model;
 using Mosaic.Api.Pricing.Model;
@@ -9,16 +8,16 @@ using Mosaic.Api.Reviews.Model;
 namespace Mosaic.Api.Infrastructure.Data;
 
 /// <summary>
-/// The one database context for all six of Mosaic's domains.
+/// The one database context for the five domains Mosaic still runs.
 /// </summary>
 /// <remarks>
 /// <para>
-/// One context, six domains, one connection string: that is what a monolith is.
-/// The book takes this apart later, and the seam it will cut along is already
-/// drawn here. No entity holds a navigation property to an entity another domain
-/// owns. Reviews stores a product identifier, not a <c>Product</c>. When Catalog
-/// moves into its own service there is no <c>Include</c> to unpick, because
-/// there never was one.
+/// One context, five domains, one connection string. It was six until chapter
+/// 8, and the seam it cut along was drawn here in chapter 2: no entity holds a
+/// navigation property to an entity another domain owns, so Reviews stores a
+/// product identifier and not a <c>Product</c>. Taking Catalog out was deleting
+/// one <c>DbSet</c> and moving one <c>IEntityTypeConfiguration</c>, because
+/// there was no <c>Include</c> to unpick.
 /// </para>
 /// <para>
 /// The mapping itself lives in the domains. Each folder carries its own
@@ -30,8 +29,6 @@ namespace Mosaic.Api.Infrastructure.Data;
 public sealed class MosaicDbContext(DbContextOptions<MosaicDbContext> options)
     : DbContext(options)
 {
-    public DbSet<Product> Products => Set<Product>();
-
     public DbSet<ProductPrice> Prices => Set<ProductPrice>();
 
     public DbSet<StockLevel> StockLevels => Set<StockLevel>();

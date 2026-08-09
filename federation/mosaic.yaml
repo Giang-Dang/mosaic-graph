@@ -1,0 +1,33 @@
+# The composer's input: which subgraphs make up Mosaic's graph, where each one
+# answers, and where to read its schema.
+#
+# Chapter 8 creates this file and does not use it. Everything that chapter does
+# is done against one subgraph at a time, by hand, because a subgraph you
+# cannot test on its own is a subgraph you will debug through a router. What
+# the file buys at this tag is a gate: scripts/verify.ps1 composes these two
+# and fails if they stop composing, so a change that only breaks the graph when
+# it is assembled cannot land quietly.
+#
+# Chapter 9 is where composition becomes the subject and where the errors this
+# command produces get read properly. Chapter 10 puts a router in front of the
+# result.
+#
+# The schema files are what each service publishes through `_service { sdl }`,
+# committed under schema/. The introspection form points the composer at a
+# running service instead:
+#
+#   introspection:
+#     url: http://localhost:5101/graphql
+
+version: 1
+
+subgraphs:
+  - name: catalog
+    routing_url: http://localhost:5101/graphql
+    schema:
+      file: ../schema/catalog.graphql
+
+  - name: mosaic
+    routing_url: http://localhost:5100/graphql
+    schema:
+      file: ../schema/mosaic.graphql

@@ -1,10 +1,10 @@
 using GreenDonut.Data;
 using HotChocolate.Data;
 using HotChocolate.Types.Pagination;
-using Mosaic.Api.Catalog.Data;
-using Mosaic.Api.Catalog.Model;
+using Mosaic.Catalog.Data;
+using Mosaic.Catalog.Model;
 
-namespace Mosaic.Api.Catalog.Types;
+namespace Mosaic.Catalog.Types;
 
 /// <summary>
 /// The Catalog domain's entries into the graph.

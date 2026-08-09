@@ -1,6 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using Mosaic.Api.Accounts.Data;
-using Mosaic.Api.Catalog.Data;
 using Mosaic.Api.Inventory.Data;
 using Mosaic.Api.Ordering.Data;
 using Mosaic.Api.Pricing.Data;
@@ -32,7 +31,6 @@ namespace Mosaic.Api.Infrastructure.Data;
 public sealed class DatabaseSeeder(
     IDbContextFactory<MosaicDbContext> contextFactory,
     IConfiguration configuration,
-    CatalogSeedData catalog,
     PricingSeedData pricing,
     InventorySeedData inventory,
     ReviewsSeedData reviews,
@@ -68,15 +66,18 @@ public sealed class DatabaseSeeder(
 
         var created = await db.Database.EnsureCreatedAsync(cancellationToken);
 
-        if (await db.Products.AnyAsync(cancellationToken))
+        // Prices rather than products since chapter 8. Catalog took the
+        // products table with it, and a seeder that checks a table it no longer
+        // owns is a seeder that will one day be told a different service's
+        // answer.
+        if (await db.Prices.AnyAsync(cancellationToken))
         {
             logger.LogInformation(
-                "Database is already seeded ({Products} products).",
-                await db.Products.CountAsync(cancellationToken));
+                "Database is already seeded ({Prices} prices).",
+                await db.Prices.CountAsync(cancellationToken));
             return;
         }
 
-        db.Products.AddRange(catalog.Products);
         db.Prices.AddRange(pricing.Prices);
         db.StockLevels.AddRange(inventory.StockLevels);
         db.Reviews.AddRange(reviews.Reviews);
@@ -86,9 +87,9 @@ public sealed class DatabaseSeeder(
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
-            "Seeded {Products} products, {Reviews} reviews, {Customers} customers "
+            "Seeded {Prices} prices, {Reviews} reviews, {Customers} customers "
             + "and {Orders} orders into a {State} schema.",
-            catalog.Products.Count,
+            pricing.Prices.Count,
             reviews.Reviews.Count,
             accounts.Customers.Count,
             ordering.Orders.Count,

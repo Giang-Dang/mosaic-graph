@@ -4,7 +4,7 @@ using Mosaic.Api.Reviews.Model;
 namespace Mosaic.Api.Reviews.Types;
 
 /// <summary>
-/// The four domain errors <c>submitReview</c> can return, as types on the
+/// The three domain errors <c>submitReview</c> can return, as types on the
 /// payload rather than entries in the <c>errors</c> array.
 /// </summary>
 /// <remarks>
@@ -21,20 +21,11 @@ namespace Mosaic.Api.Reviews.Types;
 /// exception instead and HotChocolate renames <c>FooException</c> to
 /// <c>FooError</c> for you.
 /// </para>
+/// <para>
+/// There were four before chapter 8. <c>ProductNotFoundError</c> went with
+/// Catalog, because the check behind it did.
+/// </para>
 /// </remarks>
-public sealed class ProductNotFoundError : IMosaicError
-{
-    private ProductNotFoundError(string message) => Message = message;
-
-    public string Message { get; }
-
-    public string Code => "PRODUCT_NOT_FOUND";
-
-    public static ProductNotFoundError CreateErrorFrom(ProductNotFoundException exception)
-        => new($"No product was found with id {exception.ProductId}.");
-}
-
-/// <inheritdoc cref="ProductNotFoundError"/>
 public sealed class CustomerNotFoundError : IMosaicError
 {
     private CustomerNotFoundError(string message) => Message = message;
@@ -73,7 +64,7 @@ public sealed class RatingOutOfRangeError : IMosaicError
         => new($"A rating has to be between 1 and 5. Got {exception.Rating}.");
 }
 
-/// <inheritdoc cref="ProductNotFoundError"/>
+/// <inheritdoc cref="CustomerNotFoundError"/>
 public sealed class DuplicateReviewError : IMosaicError
 {
     private DuplicateReviewError(string message) => Message = message;

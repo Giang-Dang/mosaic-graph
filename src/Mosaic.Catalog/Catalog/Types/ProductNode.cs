@@ -1,18 +1,27 @@
 using HotChocolate.Types.Relay;
-using Mosaic.Api.Catalog.Data;
-using Mosaic.Api.Catalog.Model;
+using Mosaic.Catalog.Data;
+using Mosaic.Catalog.Model;
 
-namespace Mosaic.Api.Catalog.Types;
+namespace Mosaic.Catalog.Types;
 
 /// <summary>
-/// Catalog's own view of the shared <c>Product</c> type. The other domains
-/// attach their fields to this same type from their own folders.
+/// Catalog's own view of the shared <c>Product</c> type. Until chapter 8 the
+/// other domains attached their fields to this same class from their own
+/// folders in the same assembly. They still attach them to the same GraphQL
+/// type; they now do it from another service.
 /// </summary>
+/// <remarks>
+/// What is <em>not</em> here is the interesting part. <c>[Key]</c> and
+/// <c>[ReferenceResolver]</c> are on the <c>Product</c> record itself, not on
+/// this class. See <see cref="Product"/> for why the second of those has no
+/// choice.
+/// </remarks>
 [ObjectType<Product>]
 public static partial class ProductNode
 {
     /// <summary>The product's global identifier.</summary>
     /// <remarks>
+    /// <para>
     /// The <c>Requires</c> on <c>[Parent]</c> is not decoration. This field is
     /// backed by a resolver rather than by the property, because <c>[ID]</c>
     /// encodes the raw Guid, and a projection builds its <c>SELECT</c> list
@@ -20,6 +29,15 @@ public static partial class ProductNode
     /// for <c>id</c> hands the resolver a product whose <c>Id</c> was never
     /// selected: every product answers with an all-zero Guid, and the cursors
     /// built from the sort tiebreaker go with it.
+    /// </para>
+    /// <para>
+    /// Since chapter 8 this field is also the federation key, which raises the
+    /// stakes on what it answers. The encoded form carries the GraphQL type
+    /// name, <c>Product</c>, beside the Guid, and both services name the type
+    /// that - so both encode the same identifier to the same string. Rename the
+    /// type in one of them and every representation stops matching, without a
+    /// single composition error to warn you.
+    /// </para>
     /// </remarks>
     [ID]
     public static Guid GetId([Parent("Id")] Product product) => product.Id;
@@ -42,9 +60,12 @@ public static partial class ProductNode
     /// (HC0083).
     /// </para>
     /// <para>
-    /// A DataLoader rather than a service call, because <c>nodes(ids: [...])</c>
-    /// resolves many identifiers in one request and each one arrives here
-    /// separately.
+    /// Nothing calls it at this tag. <c>Query.node</c> and <c>Query.nodes</c>
+    /// left the schema in chapter 8, for the reason Program.cs gives, and until
+    /// chapter 13 gives the graph a federated node field this resolver is a
+    /// promise rather than a code path. It stays because
+    /// <c>Product implements Node</c> is the promise, and taking it out would
+    /// be a second breaking change in a chapter that already made one.
     /// </para>
     /// </remarks>
     [NodeResolver]

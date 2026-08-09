@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Mosaic.Api/Mosaic.Api.csproj" />
+    <Project Path="src/Mosaic.Catalog/Mosaic.Catalog.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/three-approaches/Mosaic.Sample.ImplementationFirst/Mosaic.Sample.ImplementationFirst.csproj" />

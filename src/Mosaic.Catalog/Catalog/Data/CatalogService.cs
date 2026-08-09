@@ -1,26 +1,26 @@
 using GreenDonut.Data;
 using Microsoft.EntityFrameworkCore;
-using Mosaic.Api.Catalog.Model;
-using Mosaic.Api.Infrastructure;
-using Mosaic.Api.Infrastructure.Data;
+using Mosaic.Catalog.Model;
 
-namespace Mosaic.Api.Catalog.Data;
+namespace Mosaic.Catalog.Data;
 
 /// <summary>
-/// Everything the rest of Mosaic is allowed to ask the Catalog domain.
+/// Everything the rest of the world is allowed to ask the Catalog domain.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Every method takes one key and answers about one thing. There is no
-/// overload here that accepts a list of identifiers, which is deliberate and
-/// is what makes this version of Mosaic behave the way it does under a nested
-/// query. Chapter 4 leaves that shape alone and changes only what sits behind
-/// it: the same methods, over PostgreSQL instead of a list in memory.
+/// This class arrived in chapter 8 by being moved, not rewritten. Two things
+/// changed on the way out of Mosaic and both are visible in the constructor:
+/// the context is Catalog's own rather than the shared one, and the
+/// <c>ServiceCallCounter</c> is gone. That counter was the monolith's
+/// instrumentation, added in chapter 3 to count what one process was doing to
+/// itself, and a service that answers one domain's questions has nothing to
+/// count with it. Chapter 23 gives both services something better.
 /// </para>
 /// <para>
-/// Everything is read <c>AsNoTracking</c>. Nothing in Mosaic writes yet, and
-/// the change tracker is a per-context identity map that costs memory and a
-/// snapshot per row for a benefit a read-only request never collects.
+/// Everything is read <c>AsNoTracking</c>. Nothing here writes, and the change
+/// tracker is a per-context identity map that costs memory and a snapshot per
+/// row for a benefit a read-only request never collects.
 /// </para>
 /// <para>
 /// The ordering is by identifier rather than by title. The seed data numbers
@@ -28,40 +28,28 @@ namespace Mosaic.Api.Catalog.Data;
 /// the key reproduces the order the earlier chapters printed.
 /// </para>
 /// </remarks>
-public sealed class CatalogService(MosaicDbContext db, ServiceCallCounter counter)
+public sealed class CatalogService(CatalogDbContext db)
 {
     public async Task<IReadOnlyList<Product>> GetProductsAsync(
         CancellationToken cancellationToken)
-    {
-        counter.RecordLookup();
-
-        return await db.Products
+        => await db.Products
             .AsNoTracking()
             .OrderBy(p => p.Id)
             .ToListAsync(cancellationToken);
-    }
 
     public async Task<Product?> GetProductByIdAsync(
         Guid id,
         CancellationToken cancellationToken)
-    {
-        counter.RecordLookup();
-
-        return await db.Products
+        => await db.Products
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
-    }
 
     public async Task<Product?> GetProductBySkuAsync(
         string sku,
         CancellationToken cancellationToken)
-    {
-        counter.RecordLookup();
-
-        return await db.Products
+        => await db.Products
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.Sku == sku, cancellationToken);
-    }
 
     /// <summary>
     /// One page of the catalog, filtered and sorted as the caller asked, with
@@ -87,29 +75,27 @@ public sealed class CatalogService(MosaicDbContext db, ServiceCallCounter counte
         PagingArguments pagingArguments,
         QueryContext<Product>? query,
         CancellationToken cancellationToken)
-    {
-        counter.RecordLookup();
-
-        return await db.Products
+        => await db.Products
             .AsNoTracking()
             .With(query, DefaultOrder)
             .ToPageAsync(pagingArguments, cancellationToken);
-    }
 
     private static SortDefinition<Product> DefaultOrder(SortDefinition<Product> sort)
         => sort.IfEmpty(order => order.AddAscending(p => p.Title))
             .AddAscending(p => p.Id);
 
     /// <summary>Several products by their identifiers, keyed for the caller.</summary>
+    /// <remarks>
+    /// The batch method the DataLoader sits on, and since chapter 8 also the
+    /// method behind <c>_entities</c>. Every representation the router sends is
+    /// one key into this dictionary, which is why a reference resolver behind a
+    /// DataLoader costs one statement for a batch of any size.
+    /// </remarks>
     public async Task<IReadOnlyDictionary<Guid, Product>> GetProductsByIdsAsync(
         IReadOnlyList<Guid> ids,
         CancellationToken cancellationToken)
-    {
-        counter.RecordLookup();
-
-        return await db.Products
+        => await db.Products
             .AsNoTracking()
             .Where(p => ids.Contains(p.Id))
             .ToDictionaryAsync(p => p.Id, cancellationToken);
-    }
 }

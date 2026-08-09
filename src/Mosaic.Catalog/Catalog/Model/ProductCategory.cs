@@ -1,4 +1,4 @@
-namespace Mosaic.Api.Catalog.Model;
+namespace Mosaic.Catalog.Model;
 
 public enum ProductCategory
 {

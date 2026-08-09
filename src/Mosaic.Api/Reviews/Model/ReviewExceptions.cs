@@ -1,7 +1,7 @@
 namespace Mosaic.Api.Reviews.Model;
 
 /// <summary>
-/// The four ways submitting a review is refused for a reason the caller can do
+/// The three ways submitting a review is refused for a reason the caller can do
 /// something about.
 /// </summary>
 /// <remarks>
@@ -18,13 +18,6 @@ namespace Mosaic.Api.Reviews.Model;
 /// </para>
 /// </remarks>
 public abstract class ReviewSubmissionException(string message) : Exception(message);
-
-/// <summary>Thrown when the product being reviewed does not exist.</summary>
-public sealed class ProductNotFoundException(Guid productId)
-    : ReviewSubmissionException($"There is no product with id {productId}.")
-{
-    public Guid ProductId { get; } = productId;
-}
 
 /// <summary>Thrown when the customer writing the review does not exist.</summary>
 public sealed class CustomerNotFoundException(Guid customerId)

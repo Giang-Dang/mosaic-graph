@@ -21,10 +21,22 @@ public sealed class OrderingService(MosaicDbContext db, ServiceCallCounter count
     /// orders gets an empty list rather than null.
     /// </summary>
     /// <remarks>
-    /// The lines come back with the order because they are owned by it, and an
-    /// owned collection is part of the entity rather than a navigation you
-    /// have to remember to <c>Include</c>. One statement, one round trip, and
-    /// no way to forget it.
+    /// <para>
+    /// The <c>Include</c> is load-bearing and it was missing until chapter 8.
+    /// This comment used to claim that the lines came back with the order
+    /// because they were owned by it, which <c>OrderConfiguration</c> says in
+    /// so many words is not true: a line is a related entity with a shadow key,
+    /// so it is a navigation, and a navigation you do not include is a
+    /// navigation you do not get. Every order therefore answered with an empty
+    /// <c>lines</c> array and an <c>Order.total</c> that threw, from chapter 4
+    /// until this one, and no gate noticed because no request in the Postman
+    /// collection had ever asked an order for anything.
+    /// </para>
+    /// <para>
+    /// Chapter 8 found it because <c>OrderLine.product</c> is where a federated
+    /// Mosaic hands a key to Catalog, which made it the first time the book had
+    /// a reason to read an order line at all.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<Order>> GetOrdersByCustomerAsync(
         Guid customerId,
@@ -34,6 +46,7 @@ public sealed class OrderingService(MosaicDbContext db, ServiceCallCounter count
 
         return await db.Orders
             .AsNoTracking()
+            .Include(o => o.Lines)
             .Where(o => o.CustomerId == customerId)
             .OrderBy(o => o.PlacedAt)
             .ThenBy(o => o.Id)
@@ -56,6 +69,7 @@ public sealed class OrderingService(MosaicDbContext db, ServiceCallCounter count
 
         return await db.Orders
             .AsNoTracking()
+            .Include(o => o.Lines)
             .Where(o => ids.Contains(o.Id))
             .ToDictionaryAsync(o => o.Id, cancellationToken);
     }

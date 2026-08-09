@@ -1,8 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using Mosaic.Api.Catalog.Model;
+using Mosaic.Catalog.Model;
 
-namespace Mosaic.Api.Catalog.Data;
+namespace Mosaic.Catalog.Data;
 
 /// <summary>
 /// How Catalog stores a product.
