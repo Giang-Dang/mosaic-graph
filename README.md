@@ -257,7 +257,7 @@ router and a subgraph can be read without anything else in the way.
 
 Two subgraphs share one entity. Catalog owns `Product` and gives it a title and
 a price; Reviews declares the same `Product` with the same key and adds
-`reviews`. Three products, four reviews, no database.
+`reviews`. Three products, three reviews spread 2 / 1 / 0, no database.
 
 ```
 dotnet run --project samples/federated-wire/Mosaic.Sample.Wire.Catalog   # :5201
