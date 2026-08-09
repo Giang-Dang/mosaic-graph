@@ -1,7 +1,9 @@
 # This file is the spine. Later chapters attach subgraphs and a router to it,
 # and every one of them shows up here as another service on the mosaic network.
-# Chapter 4 attached the first of those: a database. Mosaic is still one
-# deployable, but it is no longer the only process in the picture.
+# Chapter 4 attached the first of those: a database. Chapter 8 attached the
+# second, and it is the one that changes what Mosaic is: the half of it that
+# owns products now runs as mosaic-catalog, beside mosaic-api rather than
+# inside it.
 
 services:
   mosaic-db:
@@ -75,6 +77,53 @@ services:
       # query. Since chapter 4 the seeder runs there too. That work happens
       # before /health answers, and start_period covers it: failures inside the
       # window do not count against the container.
+      start_period: 30s
+    restart: unless-stopped
+
+  mosaic-catalog:
+    # Chapter 8's extraction. Deliberately the same shape as mosaic-api above,
+    # down to the healthcheck: two services that start, answer and fail the
+    # same way are two services one team can operate.
+    build:
+      context: .
+      dockerfile: src/Mosaic.Catalog/Dockerfile
+    image: mosaic-catalog:dev
+    depends_on:
+      mosaic-db:
+        condition: service_healthy
+    environment:
+      # Development for the same reason mosaic-api runs in it: HotChocolate 16
+      # serves introspection in no other environment, and a subgraph nothing can
+      # introspect is a subgraph no tool can be pointed at. A development
+      # baseline, not a production posture.
+      ASPNETCORE_ENVIRONMENT: Development
+
+      # Catalog's own database, on the server the two services share. A
+      # database of its own rather than another schema inside mosaic: after
+      # this chapter the two services own their data separately, and a join
+      # across that seam should not be one connection string away. The
+      # credentials are still the shared development ones, which is a
+      # convenience here and would be a finding anywhere else.
+      #
+      # Nothing in this file creates the database. EF Core's
+      # EnsureCreatedAsync does, on Catalog's first start, which is why chapter
+      # 8 added a service here and no storage.
+      ConnectionStrings__Catalog: "Host=mosaic-db;Port=5432;Database=catalog;Username=mosaic;Password=mosaic"
+    ports:
+      # Host 5101 to container 8080, matching the launch profile and the
+      # routing URL federation/mosaic.yaml gives this subgraph, so composing
+      # against a running Catalog does not depend on how it was started.
+      - "5101:8080"
+    networks:
+      - mosaic
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      # Schema build and seeding happen before /health answers here too, and
+      # the seeder has more to do on a cold start than mosaic-api's: it creates
+      # the database before it fills it.
       start_period: 30s
     restart: unless-stopped
 

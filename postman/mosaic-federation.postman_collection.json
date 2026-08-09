@@ -1,0 +1,1174 @@
+{
+  "info": {
+    "_postman_id": "3f5c8a12-9d64-4e7b-b1a8-2c6e0f4d9a37",
+    "name": "Mosaic federation - chapter 08",
+    "description": "Mosaic's two subgraphs, as chapter 8 of Federated GraphQL on .NET leaves them, and the only collection this tag ships. It replaces the single-service one, which asked 5100 for `products` in most of its requests and cannot work here: that field went to another port.\n\nCatalog answers on 5101 and owns the `Product` entity: the sku, the title, the description, the category, and the root fields that find products. Mosaic answers on 5100, keeps Pricing, Inventory, Reviews, Accounts and Ordering, contributes four fields to a type it cannot describe, and still owns the one mutation.\n\nThere is no router in here, and that is the chapter's argument. A subgraph you cannot test on its own is a subgraph you will end up debugging through a router, so every request goes straight at one service, including the `_entities` calls a router would otherwise be making on your behalf.\n\nStart the database and both services first:\n\n    docker compose up -d mosaic-db\n    dotnet run --project src/Mosaic.Catalog\n    dotnet run --project src/Mosaic.Api\n\nThere are two databases on that one server now, `catalog` and `mosaic`, and neither service can read the other's tables. That is what the `_entities` requests are really testing: the only thing crossing the gap is a key.\n\nWhat the collection is for, in order. The first four requests ask Catalog what it owns and how it answers for a key. The next five ask Mosaic the same questions from the other side, and the last of them proves what left. The last seven are the mutation: where a product key and a customer key have to be found now that no single service can produce both, and what `submitReview` does when one of them names something that is not there.\n\nOrder is load-bearing twice over. Keys come out of Catalog and into collection variables, because a key is an opaque node id and nobody can type one by hand; and the mutations at the bottom write, so every assertion about a seeded count sits above them. The writes go to a product nothing counts - one of the three in the seed nobody has reviewed, and one that has never existed - but the run still expects a freshly seeded database. That is deliberate: point it at a database that already holds these reviews and it fails, which is the collection telling you it was not reset rather than quietly measuring the wrong thing.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "What Catalog publishes",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const sdl = body.data._service.sdl;",
+              "",
+              "pm.test(\"Product is an entity keyed by id\", function () {",
+              "    pm.expect(sdl).to.match(/type Product[^{]*@key\\(fields: \"id\"\\)/);",
+              "});",
+              "",
+              "// Everything that says what a product is stayed here. The assertion is the",
+              "// cheap half of the split: if these ever turn up in Mosaic's schema too, two",
+              "// services have started describing the same thing.",
+              "pm.test(\"Catalog is the service that says what a product is\", function () {",
+              "    pm.expect(sdl).to.include(\"sku: String!\");",
+              "    pm.expect(sdl).to.include(\"title: String!\");",
+              "    pm.expect(sdl).to.include(\"category: ProductCategory!\");",
+              "});",
+              "",
+              "pm.test(\"the subgraph offers _entities, and Product is all that is in the union\", function () {",
+              "    pm.expect(sdl).to.include(\"_entities(representations: [_Any!]!): [_Entity]!\");",
+              "    pm.expect(sdl).to.include(\"union _Entity = Product\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  _service {\n    sdl\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{catalogUrl}}/graphql",
+          "host": [
+            "{{catalogUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The field a composer reads, and the first thing worth checking after a split: Catalog has to declare `Product` as an entity, with a key, or nothing downstream can join to it.\n\n`federation/mosaic.yaml` reads this schema from `schema/catalog.graphql` rather than from here. The committed file and this response are meant to be the same document, and the day they are not is the day composition succeeds against a schema nobody is serving."
+      },
+      "response": []
+    },
+    {
+      "name": "Every product Catalog has",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const products = body.data.products;",
+              "",
+              "pm.test(\"the whole catalog, twenty-five products\", function () {",
+              "    pm.expect(products).to.have.lengthOf(25);",
+              "});",
+              "",
+              "// products orders by the underlying Guid and the seed mints those from a fixed",
+              "// pattern, so the oak table is first and stays first. The key is the literal",
+              "// the chapter prints: Catalog minted it and Mosaic still reads it.",
+              "pm.test(\"the first of them is the oak table, at the key the chapter prints\", function () {",
+              "    pm.expect(products[0].sku).to.eql(\"MOS-FRN-0001\");",
+              "    pm.expect(products[0].title).to.eql(\"Larsen Oak Dining Table\");",
+              "    pm.expect(products[0].id).to.eql(\"UHJvZHVjdDoAAACgAAAAQIAAAAAAAAAB\");",
+              "});",
+              "",
+              "// \"Product:\" in ASCII, then the sixteen bytes of the Guid. A subgraph that",
+              "// starts answering with a bare Guid still looks healthy from here, and every",
+              "// _entities call below would stop resolving.",
+              "pm.test(\"every id is a Product key rather than a bare Guid\", function () {",
+              "    products.forEach(function (product) {",
+              "        const raw = Buffer.from(product.id, \"base64\");",
+              "        pm.expect(raw.length, product.sku).to.eql(24);",
+              "        pm.expect(raw.toString(\"utf8\", 0, 8), product.sku).to.eql(\"Product:\");",
+              "    });",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"firstProductId\", products[0].id);",
+              "pm.collectionVariables.set(\"secondProductId\", products[1].id);",
+              "pm.collectionVariables.set(\"thirdProductId\", products[2].id);",
+              "pm.collectionVariables.set(\"firstProductTitle\", products[0].title);",
+              "pm.collectionVariables.set(\"secondProductTitle\", products[1].title);",
+              "pm.collectionVariables.set(\"thirdProductTitle\", products[2].title);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  products {\n    id\n    sku\n    title\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{catalogUrl}}/graphql",
+          "host": [
+            "{{catalogUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "`products` came across the split untouched, deprecation and all, and it is the cheapest way to see that Catalog took its data with it rather than left a copy behind.\n\nThe ids are what the rest of the collection runs on. Three of them go into collection variables, because every `_entities` request below needs a key and an opaque node id is not something anyone can write by hand."
+      },
+      "response": []
+    },
+    {
+      "name": "Catalog, asked for three entities",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const entities = body.data._entities;",
+              "",
+              "pm.test(\"one answer per representation\", function () {",
+              "    pm.expect(entities).to.have.lengthOf(3);",
+              "});",
+              "",
+              "pm.test(\"every answer says what it is\", function () {",
+              "    entities.forEach(function (e) {",
+              "        pm.expect(e.__typename).to.eql(\"Product\");",
+              "    });",
+              "});",
+              "",
+              "// Third, first, second. A subgraph that answers in its own order rather than",
+              "// the caller's looks identical to a correct one until the day two products",
+              "// swap titles in somebody's basket.",
+              "pm.test(\"the answers come back in the order they were asked for\", function () {",
+              "    pm.expect(entities.map(function (e) { return e.id; })).to.eql([",
+              "        pm.collectionVariables.get(\"thirdProductId\"),",
+              "        pm.collectionVariables.get(\"firstProductId\"),",
+              "        pm.collectionVariables.get(\"secondProductId\")",
+              "    ]);",
+              "});",
+              "",
+              "pm.test(\"and each one carries the title that belongs to its key\", function () {",
+              "    pm.expect(entities.map(function (e) { return e.title; })).to.eql([",
+              "        pm.collectionVariables.get(\"thirdProductTitle\"),",
+              "        pm.collectionVariables.get(\"firstProductTitle\"),",
+              "        pm.collectionVariables.get(\"secondProductTitle\")",
+              "    ]);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query($representations: [_Any!]!) {\n  _entities(representations: $representations) {\n    ... on Product {\n      __typename\n      id\n      title\n    }\n  }\n}",
+            "variables": "{\n  \"representations\": [\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"{{thirdProductId}}\"\n    },\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"{{firstProductId}}\"\n    },\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"{{secondProductId}}\"\n    }\n  ]\n}"
+          }
+        },
+        "url": {
+          "raw": "{{catalogUrl}}/graphql",
+          "host": [
+            "{{catalogUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The request a router makes, sent by hand. Three keys in one call, and the reply is positional: answer *n* belongs to representation *n*.\n\nThe keys go out in an order Catalog would never pick on its own, so that the assertion below is about the contract rather than about a coincidence. Behind the field is a DataLoader, which is why three keys cost one statement instead of three."
+      },
+      "response": []
+    },
+    {
+      "name": "A key Catalog cannot decode",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "// The reference resolver returns null rather than throwing, and [_Entity] is",
+              "// nullable for exactly this. A router reads that as one product it could not",
+              "// resolve and carries on with the rest of the batch; an error would have taken",
+              "// the whole call down with it.",
+              "pm.test(\"an undecodable key is not an error\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "pm.test(\"it is a null in the position the key was sent in\", function () {",
+              "    pm.expect(body.data._entities).to.have.lengthOf(1);",
+              "    pm.expect(body.data._entities[0]).to.eql(null);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query($representations: [_Any!]!) {\n  _entities(representations: $representations) {\n    ... on Product {\n      id\n      title\n    }\n  }\n}",
+            "variables": "{\n  \"representations\": [\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"a0000000-0000-4000-8000-000000000001\"\n    }\n  ]\n}"
+          }
+        },
+        "url": {
+          "raw": "{{catalogUrl}}/graphql",
+          "host": [
+            "{{catalogUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The right product in the wrong encoding. `a0000000-0000-4000-8000-000000000001` is the Guid sitting inside product 1's key, and Catalog refuses it, because what federation contracts on is the opaque id and not the value inside it.\n\nThis is the failure to expect when a subgraph is fed representations by something other than a router, and it is quiet. Nothing here is an error: the answer is a null, in the slot the key went out in."
+      },
+      "response": []
+    },
+    {
+      "name": "What Mosaic publishes now",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const sdl = body.data._service.sdl;",
+              "",
+              "pm.test(\"Mosaic declares the same entity with the same key\", function () {",
+              "    pm.expect(sdl).to.match(/type Product[^{]*@key\\(fields: \"id\"\\)/);",
+              "});",
+              "",
+              "pm.test(\"and contributes four fields to it\", function () {",
+              "    pm.expect(sdl).to.include(\"price: Money!\");",
+              "    pm.expect(sdl).to.include(\"availableQuantity: Int!\");",
+              "    pm.expect(sdl).to.include(\"averageRating: Float\");",
+              "    pm.expect(sdl).to.include(\"): ReviewConnection!\");",
+              "});",
+              "",
+              "// The whole point of the arrangement. Mosaic has never heard of a title or a",
+              "// sku, and only composition puts them on one type.",
+              "pm.test(\"and knows nothing about a sku or a title\", function () {",
+              "    pm.expect(sdl).to.not.include(\"sku\");",
+              "    pm.expect(sdl).to.not.include(\"title\");",
+              "});",
+              "",
+              "pm.test(\"the subgraph offers _entities\", function () {",
+              "    pm.expect(sdl).to.include(\"_entities(representations: [_Any!]!): [_Entity]!\");",
+              "});",
+              "",
+              "// ProductNotFoundError was the fourth member until this chapter, and dropping",
+              "// it is a breaking change for every client that handled it. The union is the",
+              "// only place the schema admits to that, which is why it is asserted here and",
+              "// not left to the mutations at the bottom to imply.",
+              "pm.test(\"the submitReview union is three members, and a missing product is not one\", function () {",
+              "    pm.expect(sdl).to.include(\"union SubmitReviewError\");",
+              "    pm.expect(sdl).to.include(\"CustomerNotFoundError\");",
+              "    pm.expect(sdl).to.include(\"RatingOutOfRangeError\");",
+              "    pm.expect(sdl).to.include(\"DuplicateReviewError\");",
+              "    pm.expect(sdl).to.not.include(\"ProductNotFoundError\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  _service {\n    sdl\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The other half of the contract. Mosaic declares a type with the same name and the same key, four fields hanging off it, and nothing at all that describes a product.\n\n`@key` on a type this service cannot describe is the trick worth sitting with. What the schema says is: I hold no products, but hand me one and I will tell you what it costs, what is on the shelf, and what people thought of it.\n\nThe last assertion is about the mutation rather than the entity, and it is here because this is the request that reads the schema. `submitReview` lost a member of its error union in this chapter, and a union that quietly grows a member back is worth catching in the same breath as a key that quietly changes."
+      },
+      "response": []
+    },
+    {
+      "name": "Mosaic, asked about a product it cannot name",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const product = body.data._entities[0];",
+              "",
+              "pm.test(\"one answer, for the key that was sent\", function () {",
+              "    pm.expect(body.data._entities).to.have.lengthOf(1);",
+              "    pm.expect(product.__typename).to.eql(\"Product\");",
+              "    pm.expect(product.id).to.eql(pm.collectionVariables.get(\"firstProductId\"));",
+              "});",
+              "",
+              "pm.test(\"Pricing answers 1249.00 EUR\", function () {",
+              "    pm.expect(Number(product.price.amount)).to.eql(1249);",
+              "    pm.expect(product.price.currency).to.eql(\"EUR\");",
+              "});",
+              "",
+              "pm.test(\"Inventory answers twelve on the shelf\", function () {",
+              "    pm.expect(product.availableQuantity).to.eql(12);",
+              "});",
+              "",
+              "pm.test(\"Reviews answers 4.25\", function () {",
+              "    pm.expect(Number(product.averageRating)).to.eql(4.25);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query($representations: [_Any!]!) {\n  _entities(representations: $representations) {\n    ... on Product {\n      __typename\n      id\n      price {\n        amount\n        currency\n      }\n      availableQuantity\n      averageRating\n    }\n  }\n}",
+            "variables": "{\n  \"representations\": [\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"{{firstProductId}}\"\n    }\n  ]\n}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The key Catalog answered with, sent to a service that cannot see Catalog's tables. Three domains inside Mosaic answer for it - Pricing, Inventory and Reviews - and not one of them needs anything but the identifier.\n\nMosaic does not check that the product exists, because it has no way to. Handed a key it builds an object and lets its own domains speak; a key naming a product deleted yesterday would get a price and an empty review list. That is harmless only while a router is the one calling, which is what chapter 25 is about."
+      },
+      "response": []
+    },
+    {
+      "name": "Three products, one call to Mosaic",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const entities = body.data._entities;",
+              "",
+              "pm.test(\"one answer per representation\", function () {",
+              "    pm.expect(entities).to.have.lengthOf(3);",
+              "});",
+              "",
+              "pm.test(\"answer n belongs to representation n\", function () {",
+              "    pm.expect(entities.map(function (e) { return e.id; })).to.eql([",
+              "        pm.collectionVariables.get(\"secondProductId\"),",
+              "        pm.collectionVariables.get(\"firstProductId\"),",
+              "        pm.collectionVariables.get(\"thirdProductId\")",
+              "    ]);",
+              "});",
+              "",
+              "// Eight, twelve and ten. The oak table is the most reviewed product in the",
+              "// seed and it was sent second on purpose: a count that lands in the middle is",
+              "// a count that cannot have arrived there by luck.",
+              "pm.test(\"the review counts follow the keys rather than the seed order\", function () {",
+              "    pm.expect(entities.map(function (e) { return e.reviews.totalCount; })).to.eql([8, 12, 10]);",
+              "});",
+              "",
+              "pm.test(\"and every answer pages rather than handing back the lot\", function () {",
+              "    entities.forEach(function (e) {",
+              "        pm.expect(e.reviews.nodes).to.have.lengthOf(2);",
+              "        pm.expect(e.reviews.pageInfo.hasNextPage).to.eql(true);",
+              "    });",
+              "});",
+              "",
+              "// Reviews reaching Accounts, both of them still inside Mosaic. Nothing about",
+              "// this hop crossed a service boundary in chapter 8, and the assertion is here",
+              "// so that the day one of them leaves, this is what says so.",
+              "pm.test(\"and every review still names its author, by a Customer key\", function () {",
+              "    entities.forEach(function (e) {",
+              "        e.reviews.nodes.forEach(function (node) {",
+              "            const raw = Buffer.from(node.author.id, \"base64\");",
+              "            pm.expect(raw.length).to.eql(25);",
+              "            pm.expect(raw.toString(\"utf8\", 0, 9)).to.eql(\"Customer:\");",
+              "        });",
+              "    });",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"reviewerId\", entities[0].reviews.nodes[0].author.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query($representations: [_Any!]!) {\n  _entities(representations: $representations) {\n    ... on Product {\n      id\n      reviews(first: 2) {\n        totalCount\n        nodes {\n          rating\n          author {\n            id\n          }\n        }\n        pageInfo {\n          hasNextPage\n        }\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"representations\": [\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"{{secondProductId}}\"\n    },\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"{{firstProductId}}\"\n    },\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"{{thirdProductId}}\"\n    }\n  ]\n}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The batched form, which is what a router sends after it has fetched a page from Catalog: one request, three keys, and a DataLoader per domain behind it rather than three round trips each.\n\nThe counts are the assertion worth having. They differ per product and they arrive in the order the keys went out, so a resolver that answered in its own order, or dropped a key somewhere in the batch, cannot pass this.\n\nThe first author on the first page goes into a collection variable. The mutations at the bottom need a customer who exists, Mosaic has no root field that lists customers, and this is where one falls out of the data. Since chapter 8 every way into this service starts either at one of its two root fields or at a key somebody else is holding."
+      },
+      "response": []
+    },
+    {
+      "name": "What one customer bought",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const orders = body.data.ordersByCustomer;",
+              "",
+              "pm.test(\"two orders, oldest first\", function () {",
+              "    pm.expect(orders).to.have.lengthOf(2);",
+              "    pm.expect(new Date(orders[0].placedAt).getTime())",
+              "        .to.be.below(new Date(orders[1].placedAt).getTime());",
+              "});",
+              "",
+              "pm.test(\"the January order: three lines, 2812.00 EUR\", function () {",
+              "    pm.expect(orders[0].lines).to.have.lengthOf(3);",
+              "    pm.expect(Number(orders[0].total.amount)).to.eql(2812);",
+              "    pm.expect(orders[0].total.currency).to.eql(\"EUR\");",
+              "});",
+              "",
+              "pm.test(\"the February order: one line, 238.00 EUR\", function () {",
+              "    pm.expect(orders[1].lines).to.have.lengthOf(1);",
+              "    pm.expect(Number(orders[1].total.amount)).to.eql(238);",
+              "    pm.expect(orders[1].total.currency).to.eql(\"EUR\");",
+              "});",
+              "",
+              "pm.test(\"each total is what its own lines add up to\", function () {",
+              "    orders.forEach(function (order) {",
+              "        const sum = order.lines.reduce(function (acc, line) {",
+              "            return acc + line.quantity * Number(line.unitPrice.amount);",
+              "        }, 0);",
+              "        pm.expect(sum, order.id).to.eql(Number(order.total.amount));",
+              "    });",
+              "});",
+              "",
+              "// The id is the only thing Mosaic's Product has to say about itself here, so",
+              "// the check is on the encoding: \"Product:\" in ASCII, then sixteen bytes. An",
+              "// order line that stored a bare Guid would read perfectly and be useless to",
+              "// Catalog.",
+              "pm.test(\"every line names its product by a well-formed Product key\", function () {",
+              "    orders.forEach(function (order) {",
+              "        order.lines.forEach(function (line) {",
+              "            const raw = Buffer.from(line.product.id, \"base64\");",
+              "            pm.expect(raw.length, order.id).to.eql(24);",
+              "            pm.expect(raw.toString(\"utf8\", 0, 8), order.id).to.eql(\"Product:\");",
+              "        });",
+              "    });",
+              "});",
+              "",
+              "pm.test(\"and one of those keys is the one Catalog answered with\", function () {",
+              "    const ids = orders[0].lines.map(function (line) { return line.product.id; });",
+              "    pm.expect(ids).to.include(pm.collectionVariables.get(\"firstProductId\"));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query($customerId: ID!) {\n  ordersByCustomer(customerId: $customerId) {\n    id\n    placedAt\n    total {\n      amount\n      currency\n    }\n    lines {\n      quantity\n      unitPrice {\n        amount\n        currency\n      }\n      product {\n        id\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"customerId\": \"Q3VzdG9tZXI6AAAAwAAAAECAAAAAAAAAAQ==\"\n}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "Ordering never moved, and it is the one place in this service where a product identifier is written down rather than handed in by a caller.\n\nLook at what a line can say about the thing that was bought: an id. Mosaic's `Product` has no title to give, so a client that wants one has to take this key to Catalog, which is precisely the round trip a router will be making from chapter 10 onwards. The last two assertions are the join, done by hand: the key decodes the way Catalog mints them, and one of them is a key Catalog handed over earlier in this run."
+      },
+      "response": []
+    },
+    {
+      "name": "The field Mosaic no longer has",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"rejected before execution with 400\", function () {",
+              "    pm.response.to.have.status(400);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"the error names the field and the type it is not on\", function () {",
+              "    pm.expect(body.errors).to.be.an(\"array\").that.is.not.empty;",
+              "    pm.expect(body.errors[0].message).to.include(\"products\");",
+              "    pm.expect(body.errors[0].message.toLowerCase()).to.include(\"does not exist\");",
+              "    pm.expect(body.errors[0].extensions.type).to.eql(\"Query\");",
+              "    pm.expect(body.errors[0].extensions.field).to.eql(\"products\");",
+              "});",
+              "",
+              "pm.test(\"nothing was resolved\", function () {",
+              "    pm.expect(body).to.not.have.property(\"data\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  products {\n    id\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "A deliberate mistake, kept because the failure is the evidence. `products` was a Mosaic field for six chapters. It now belongs to another service on another port, and the schema says so at validation, before a resolver runs.\n\nNothing was left behind as a redirect, and that is the answer to the obvious question. `productById`, `productBySku`, `node` and `nodes` have gone the same way, so a client still pointed at 5100 with last chapter's queries fails with the missing field named, which is a great deal kinder than an empty list."
+      },
+      "response": []
+    },
+    {
+      "name": "A product nobody has reviewed",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const product = body.data.productBySku;",
+              "",
+              "pm.test(\"the kettle, which is one of the three nobody wrote about\", function () {",
+              "    pm.expect(product.sku).to.eql(\"MOS-KIT-0006\");",
+              "    pm.expect(product.title).to.eql(\"Enamel Kettle\");",
+              "});",
+              "",
+              "pm.test(\"and its key is one Mosaic will be able to read\", function () {",
+              "    const raw = Buffer.from(product.id, \"base64\");",
+              "    pm.expect(raw.length).to.eql(24);",
+              "    pm.expect(raw.toString(\"utf8\", 0, 8)).to.eql(\"Product:\");",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"unreviewedProductId\", product.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query Unreviewed($sku: String!) {\n  productBySku(sku: $sku) {\n    id\n    sku\n    title\n  }\n}",
+            "variables": "{\n  \"sku\": \"MOS-KIT-0006\"\n}"
+          }
+        },
+        "url": {
+          "raw": "{{catalogUrl}}/graphql",
+          "host": [
+            "{{catalogUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The mutations below need a product, and since chapter 8 only Catalog can hand one over. `productBySku` is the lookup to reach for when a request wants a particular product: the sku is a plain string, and it is the last identifier in this repository a person can still type.\n\nThree products in the seed have nothing written about them and this is one of them. That is what makes it safe to write against. The review counts asserted higher up belong to other products, so the row the mutation leaves behind cannot move a number anything else in this collection is checking."
+      },
+      "response": []
+    },
+    {
+      "name": "Nothing written about it yet",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const product = body.data._entities[0];",
+              "",
+              "// The bug this guards against is nodes coming back missing rather than empty.",
+              "// A client reads undefined, maps over it, and falls over a long way from the",
+              "// resolver that caused it.",
+              "pm.test(\"an empty connection, not a missing one\", function () {",
+              "    pm.expect(product.id).to.eql(pm.collectionVariables.get(\"unreviewedProductId\"));",
+              "    pm.expect(product.reviews, \"the reviews connection is absent\").to.have.property(\"nodes\");",
+              "    pm.expect(product.reviews.nodes, \"nodes is not an array\").to.be.an(\"array\");",
+              "    pm.expect(product.reviews.nodes).to.have.lengthOf(0);",
+              "    pm.expect(product.reviews.totalCount).to.eql(0);",
+              "});",
+              "",
+              "pm.test(\"and no page after it either\", function () {",
+              "    pm.expect(product.reviews.pageInfo.hasNextPage).to.eql(false);",
+              "});",
+              "",
+              "// Null rather than zero, which is the whole argument for making the field",
+              "// nullable: no opinion is not the same as a low opinion.",
+              "pm.test(\"nothing to average, so nothing is averaged\", function () {",
+              "    pm.expect(product.averageRating).to.eql(null);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query($representations: [_Any!]!) {\n  _entities(representations: $representations) {\n    ... on Product {\n      id\n      averageRating\n      reviews(first: 5) {\n        totalCount\n        pageInfo {\n          hasNextPage\n        }\n        nodes {\n          id\n          rating\n        }\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"representations\": [\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"{{unreviewedProductId}}\"\n    }\n  ]\n}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "A regression test the single-service collection used to run through `productBySku`, arriving now at the entry point a router uses. Batched connection resolvers fail the empty case by leaving the key out of the result altogether, which is not an error the server reports and not something a count assertion catches. Asserting that `nodes` exists and is an array is what catches it.\n\nIt is also the baseline for the mutations below: this is the last request that sees this product unreviewed, and running the collection twice without reseeding fails here first."
+      },
+      "response": []
+    },
+    {
+      "name": "A rating nobody can give",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "// A rejected input is a result, not an accident, so it never reaches the",
+              "// transport-level errors array.",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const payload = body.data.submitReview;",
+              "",
+              "pm.test(\"nothing was written\", function () {",
+              "    pm.expect(payload.review).to.eql(null);",
+              "    pm.expect(payload.errors).to.be.an(\"array\");",
+              "    pm.expect(payload.errors).to.have.lengthOf(1);",
+              "});",
+              "",
+              "pm.test(\"the error is about the rating, and states the range\", function () {",
+              "    const failure = payload.errors[0];",
+              "    pm.expect(failure.__typename).to.eql(\"RatingOutOfRangeError\");",
+              "    pm.expect(failure.code).to.eql(\"RATING_OUT_OF_RANGE\");",
+              "    pm.expect(failure.message).to.eql(\"A rating has to be between 1 and 5. Got 9.\");",
+              "    pm.expect(failure.min).to.eql(1);",
+              "    pm.expect(failure.max).to.eql(5);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "mutation SubmitReview($input: SubmitReviewInput!) {\n  submitReview(input: $input) {\n    review {\n      id\n      rating\n    }\n    errors {\n      __typename\n      ... on Error {\n        message\n        code\n      }\n      ... on RatingOutOfRangeError {\n        min\n        max\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"input\": {\n    \"productId\": \"{{unreviewedProductId}}\",\n    \"customerId\": \"{{reviewerId}}\",\n    \"rating\": 9,\n    \"body\": \"Nine out of five.\"\n  }\n}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "Nine, on a five point scale. The answer is 200 with a payload error rather than a transport error, because the schema treats a bad rating as something the client should render, not something that went wrong.\n\n`errors` is a union, so `message` cannot be selected on it directly. The fragment on the `Error` interface is what makes one selection cover every member, and the fragment on `RatingOutOfRangeError` reaches the two fields only that member has. Handing back `min` and `max` rather than a sentence is what lets a form put the bounds on its input without hard-coding them.\n\nBoth ids come from earlier requests: the product from Catalog, the customer from an author lifted out of a page of reviews. Neither can be typed by hand any more, and Mosaic can no longer produce the product one at all.\n\nThis runs before the successful submission on purpose. The customer has not reviewed this product yet, so the rating is the only thing wrong with the request, and nothing is written."
+      },
+      "response": []
+    },
+    {
+      "name": "A customer who does not exist",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const payload = body.data.submitReview;",
+              "",
+              "pm.test(\"nothing was written\", function () {",
+              "    pm.expect(payload.review).to.eql(null);",
+              "    pm.expect(payload.errors).to.be.an(\"array\");",
+              "    pm.expect(payload.errors).to.have.lengthOf(1);",
+              "});",
+              "",
+              "// The message carries the Guid back out, which is also the proof that the key",
+              "// decoded: the twelve seeded customers are 1 to 12 and this one is 99.",
+              "pm.test(\"the error names the customer, and the id it decoded to\", function () {",
+              "    const failure = payload.errors[0];",
+              "    pm.expect(failure.__typename).to.eql(\"CustomerNotFoundError\");",
+              "    pm.expect(failure.code).to.eql(\"CUSTOMER_NOT_FOUND\");",
+              "    pm.expect(failure.message).to.eql(",
+              "        \"No customer was found with id c0000000-0000-4000-8000-000000000099.\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "mutation SubmitReview($input: SubmitReviewInput!) {\n  submitReview(input: $input) {\n    review {\n      id\n      rating\n    }\n    errors {\n      __typename\n      ... on Error {\n        message\n        code\n      }\n      ... on RatingOutOfRangeError {\n        min\n        max\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"input\": {\n    \"productId\": \"{{unreviewedProductId}}\",\n    \"customerId\": \"Q3VzdG9tZXI6AAAAwAAAAECAAAAAAAAAmQ==\",\n    \"rating\": 4,\n    \"body\": \"Written by nobody in particular.\"\n  }\n}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "A well-formed customer key for a customer who is not there. It decodes cleanly, so the request gets past the edge and fails where the rule lives, which is the difference between a validation error and a domain one.\n\nHold this next to the request three below it. Mosaic still checks the customer, because Accounts is its own domain and the row is in its own database. It no longer checks the product, because Catalog's rows are in a database it cannot reach. The gap between those two lines is the whole cost of the split, in one mutation."
+      },
+      "response": []
+    },
+    {
+      "name": "A review, written",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const payload = body.data.submitReview;",
+              "",
+              "pm.test(\"the payload carries no errors\", function () {",
+              "    pm.expect(payload.errors).to.eql(null);",
+              "});",
+              "",
+              "pm.test(\"the review came back holding what was sent\", function () {",
+              "    pm.expect(payload.review, \"nothing was written\").to.be.an(\"object\");",
+              "    pm.expect(payload.review.rating).to.eql(4);",
+              "    pm.expect(payload.review.body).to.eql(\"The kettle boils quickly and the enamel has not chipped.\");",
+              "    pm.expect(payload.review.author.id).to.eql(pm.collectionVariables.get(\"reviewerId\"));",
+              "});",
+              "",
+              "pm.test(\"the new row answers to a Review node id\", function () {",
+              "    const raw = Buffer.from(payload.review.id, \"base64\");",
+              "    pm.expect(raw.length).to.eql(23);",
+              "    pm.expect(raw.toString(\"utf8\", 0, 7)).to.eql(\"Review:\");",
+              "    let blank = true;",
+              "    for (let i = 7; i < raw.length; i++) {",
+              "        if (raw[i] !== 0) { blank = false; break; }",
+              "    }",
+              "    pm.expect(blank, \"the review id carries an all-zero key\").to.eql(false);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "mutation SubmitReview($input: SubmitReviewInput!) {\n  submitReview(input: $input) {\n    review {\n      id\n      rating\n      body\n      createdAt\n      author {\n        id\n        displayName\n      }\n    }\n    errors {\n      __typename\n      ... on Error {\n        message\n        code\n      }\n      ... on RatingOutOfRangeError {\n        min\n        max\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"input\": {\n    \"productId\": \"{{unreviewedProductId}}\",\n    \"customerId\": \"{{reviewerId}}\",\n    \"rating\": 4,\n    \"body\": \"The kettle boils quickly and the enamel has not chipped.\"\n  }\n}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The first request in the collection that writes anything, which is why every assertion about a seeded count sits above it and not below.\n\nThe write itself did not change in chapter 8. What changed is where its two identifiers come from: the product key was minted by a service on another port and travelled here as a string, and the customer key came out of Mosaic's own data. Neither service had to know anything about the other for that to work, which is the point the whole chapter is making.\n\nThe review comes back with an id of its own, and the last assertion decodes it. A resolver that projects a key it did not select answers with an all-zero Guid wrapped in a perfectly plausible node id, and reading the bytes is the only way to see it."
+      },
+      "response": []
+    },
+    {
+      "name": "The same review again",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const payload = body.data.submitReview;",
+              "",
+              "pm.test(\"the second one was not written\", function () {",
+              "    pm.expect(payload.review).to.eql(null);",
+              "    pm.expect(payload.errors).to.be.an(\"array\");",
+              "    pm.expect(payload.errors).to.have.lengthOf(1);",
+              "});",
+              "",
+              "pm.test(\"the error is the duplicate, and says so in both registers\", function () {",
+              "    const failure = payload.errors[0];",
+              "    pm.expect(failure.__typename).to.eql(\"DuplicateReviewError\");",
+              "    pm.expect(failure.code).to.eql(\"DUPLICATE_REVIEW\");",
+              "    pm.expect(failure.message).to.eql(\"You have already reviewed this product.\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "mutation SubmitReview($input: SubmitReviewInput!) {\n  submitReview(input: $input) {\n    review {\n      id\n      rating\n    }\n    errors {\n      __typename\n      ... on Error {\n        message\n        code\n      }\n      ... on RatingOutOfRangeError {\n        min\n        max\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"input\": {\n    \"productId\": \"{{unreviewedProductId}}\",\n    \"customerId\": \"{{reviewerId}}\",\n    \"rating\": 4,\n    \"body\": \"The kettle boils quickly and the enamel has not chipped.\"\n  }\n}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The same request again, unchanged. One customer, one review per product, so the second attempt is refused, and the refusal arrives the way the bad rating did: 200, `review` null, one member of the error union.\n\nTwo audiences, two fields. `message` is for a person, `code` is for the client's switch statement, and a client is meant to branch on `__typename` or `code` rather than on the wording of a sentence.\n\nThe rule behind this one is still Mosaic's own, and that is worth noticing after the request above. Reviews can tell that this customer has already reviewed this product because both facts are rows in its database. It could say the same about the product existing until chapter 8 moved that row somewhere else."
+      },
+      "response": []
+    },
+    {
+      "name": "A product Mosaic cannot check",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const payload = body.data.submitReview;",
+              "",
+              "// The behaviour that changed in this chapter. Until chapter 8 this was a",
+              "// ProductNotFoundError; the check went with Catalog, and the union lost a",
+              "// member, which request 5 asserts against the schema.",
+              "pm.test(\"a review against a product that does not exist is accepted\", function () {",
+              "    pm.expect(payload.errors).to.eql(null);",
+              "    pm.expect(payload.review, \"the write was refused\").to.be.an(\"object\");",
+              "    pm.expect(payload.review.rating).to.eql(5);",
+              "});",
+              "",
+              "pm.test(\"and it is a real row, with a node id of its own\", function () {",
+              "    const raw = Buffer.from(payload.review.id, \"base64\");",
+              "    pm.expect(raw.length).to.eql(23);",
+              "    pm.expect(raw.toString(\"utf8\", 0, 7)).to.eql(\"Review:\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "mutation SubmitReview($input: SubmitReviewInput!) {\n  submitReview(input: $input) {\n    review {\n      id\n      rating\n    }\n    errors {\n      __typename\n      ... on Error {\n        message\n        code\n      }\n      ... on RatingOutOfRangeError {\n        min\n        max\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"input\": {\n    \"productId\": \"UHJvZHVjdDoAAACgAAAAQIAAAAAAAACZ\",\n    \"customerId\": \"{{reviewerId}}\",\n    \"rating\": 5,\n    \"body\": \"There is no such product, and this review exists anyway.\"\n  }\n}"
+          }
+        },
+        "url": {
+          "raw": "{{mosaicUrl}}/graphql",
+          "host": [
+            "{{mosaicUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The key is well formed and decodes to a Guid no product has ever had. Mosaic stores the review without complaint, and that is not a bug in this collection.\n\nUntil chapter 8, Reviews asked Catalog whether the product existed, because Catalog was a folder in the same process. It is a separate service now, and the choice was between a network call on the write path and an accepted risk. This tag takes the risk: an unknown identifier is stored, `ProductNotFoundError` is gone from the payload union, and every client that handled it is broken. Chapter 11 has `@requires`, which is the closest federation comes to giving the check back, and chapter 12 argues about whether it is worth taking.\n\nIt runs last because it writes, and the row it leaves belongs to a product nothing in this collection counts. That is the only reason the case can be demonstrated here at all rather than described in the chapter and left untested."
+      },
+      "response": []
+    }
+  ]
+}

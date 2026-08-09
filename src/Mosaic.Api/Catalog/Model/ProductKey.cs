@@ -32,7 +32,8 @@ public static class ProductKey
 {
     public static bool TryDecode(string formattedId, IResolverContext context, out Guid id)
     {
-        var accessor = context.Schema.Services?.GetService(typeof(INodeIdSerializerAccessor))
+        var services = context.Schema.Services;
+        var accessor = services?.GetService(typeof(INodeIdSerializerAccessor))
             as INodeIdSerializerAccessor;
 
         if (accessor is null)
