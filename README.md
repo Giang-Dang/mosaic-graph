@@ -230,6 +230,18 @@ a graph composed with `--disable-resolvability-validation` starts without a
 murmur, answers anything that stays inside one subgraph, and returns HTTP 500
 with `internal server error` to anything that crosses.
 
+Two numbers chapter 10 prints are timings rather than behaviours, so they get a
+script of their own rather than a case:
+
+```
+node scripts/measure-router.mjs            # what the router adds, in ms
+node scripts/measure-router.mjs --reload   # how long a recompose takes to land
+```
+
+That one is deliberately not part of `verify.ps1`. Single-machine timings
+asserted in a gate fail on a busier laptop, which teaches nobody anything. Run
+it twice and compare the two runs before believing any difference.
+
 `Product.id` is the field chapter 5 designed, unchanged: a Relay global
 identifier, base64, carrying the type name beside the key. Since chapter 8 it is
 also the federation `@key`, which makes that opaque string the entire contract

@@ -67,7 +67,9 @@ const CASES = [
         },
       });
       const controlDebug = countDebug(control.logs);
-      evidence.push(`environment alone, LOG_LEVEL=debug:        ${controlDebug} debug lines`);
+      // padEnd rather than spaces typed to look right: the two labels differ
+      // in length and hand-aligned columns drift the moment either is edited.
+      evidence.push(`${'environment alone, LOG_LEVEL=debug:'.padEnd(44)}${controlDebug} debug lines`);
 
       // Same environment variable, and a config file that says otherwise.
       const both = await ctx.router({
@@ -75,7 +77,7 @@ const CASES = [
         env: { LOG_LEVEL: 'debug' },
       });
       const bothDebug = countDebug(both.logs);
-      evidence.push(`config.yaml says info, environment debug: ${bothDebug} debug lines`);
+      evidence.push(`${'config.yaml says info, environment debug:'.padEnd(44)}${bothDebug} debug lines`);
 
       const problems = [];
       if (controlDebug === 0) {
