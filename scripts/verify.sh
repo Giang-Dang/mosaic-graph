@@ -124,6 +124,29 @@ ENTITIES_POSTMAN="$REPO_ROOT/postman/mosaic-entities.postman_collection.json"
 ENTITIES_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-entities.local.postman_environment.json"
 ENTITY_CASES="$REPO_ROOT/scripts/entity-cases.mjs"
 
+# What a computed field costs the service that computes it. Chapter 11 prints
+# these four numbers, so the gate produces them: the same storefront query
+# through the router with and without Product.shippingCost, read off Mosaic's
+# own request timeline. They are counts rather than timings, which is why they
+# belong in a gate at all - decision 62 keeps milliseconds out of one.
+#
+# The selection deliberately stops short of Product.reviews. A resolver runs per
+# review author, so the count of a query that walks the reviews depends on how
+# many reviews exist, and the Postman collection above submits one. Left in,
+# these numbers would be true only of a database nothing had written to yet,
+# which is the opposite of what a gate wants. averageRating still reaches the
+# review table, so the statement count is honest.
+SHIPPING_STOREFRONT_QUERY='{ browseProducts(first: 25) { nodes { title price { amount currency } shippingCost { amount currency } availableQuantity averageRating } } }'
+PLAIN_STOREFRONT_QUERY='{ browseProducts(first: 25) { nodes { title price { amount currency } availableQuantity averageRating } } }'
+
+# 76 is one root field plus three resolvers for each of 25 products; 101 is the
+# same with one more per product. The statement count does not move, because
+# shippingCost takes the same DataLoader price does and finds the key already in
+# the batch.
+EXPECTED_RESOLVERS_WITHOUT_SHIPPING=76
+EXPECTED_RESOLVERS_WITH_SHIPPING=101
+EXPECTED_STOREFRONT_SQL=3
+
 # The two subgraphs since chapter 8, written as <name>:<port>. Both files under
 # schema/ are what `_service { sdl }` returns, which is what a composer reads,
 # so checking them is a check on the federated contract and not only on the SDL.
@@ -1691,6 +1714,75 @@ output above says which. Fix the chapter, not the assertion.'
             fi
             step_ok 'entities resolve the eleven ways chapter 11 says they do'
         fi
+
+        # What the computed field costs, off Mosaic's own timeline. Both
+        # documents are warmed first, because a cold request measures the
+        # runtime warming up rather than the query, and both are measured in the
+        # same run so the two numbers can be compared at all.
+        # Neither query contains a double quote, which is what makes this
+        # printf safe; the same shortcut is used for CATALOG_QUERY above.
+        printf '{"query":"%s"}' "$PLAIN_STOREFRONT_QUERY" \
+            > "$TEMP_DIR/storefront-plain.json"
+        printf '{"query":"%s"}' "$SHIPPING_STOREFRONT_QUERY" \
+            > "$TEMP_DIR/storefront-shipping.json"
+
+        warm=0
+        while [ "$warm" -lt 3 ]; do
+            post_graphql "$ROUTER_URL" "$TEMP_DIR/storefront-plain.json" \
+                "$TEMP_DIR/storefront-plain.out.json" 'storefront warm-up'
+            post_graphql "$ROUTER_URL" "$TEMP_DIR/storefront-shipping.json" \
+                "$TEMP_DIR/storefront-shipping.out.json" 'storefront warm-up'
+            warm=$((warm + 1))
+        done
+
+        for shipping_case in "plain:$EXPECTED_RESOLVERS_WITHOUT_SHIPPING:without shippingCost" \
+                             "shipping:$EXPECTED_RESOLVERS_WITH_SHIPPING:with shippingCost"; do
+            case_file="${shipping_case%%:*}"
+            case_rest="${shipping_case#*:}"
+            case_resolvers="${case_rest%%:*}"
+            case_label="${case_rest#*:}"
+
+            before="$(grep -c '[0-9] resolvers, [0-9]* SQL)' "$API_LOG" 2>/dev/null || true)"
+            post_graphql "$ROUTER_URL" "$TEMP_DIR/storefront-$case_file.json" \
+                "$TEMP_DIR/storefront-$case_file.out.json" "storefront $case_label"
+
+            waited=0
+            timeline=""
+            while [ "$waited" -lt 75 ]; do
+                after="$(grep -c '[0-9] resolvers, [0-9]* SQL)' "$API_LOG" 2>/dev/null || true)"
+                if [ "${after:-0}" -gt "${before:-0}" ]; then
+                    timeline="$(grep -o '[0-9][0-9]* resolvers, [0-9][0-9]* SQL)' "$API_LOG" | tail -n 1)"
+                    break
+                fi
+                sleep 0.2
+                waited=$((waited + 1))
+            done
+
+            if [ -z "$timeline" ]; then
+                step_fail 'shipping cost' "Mosaic logged no timeline for the storefront query $case_label.
+
+$(log_tail)"
+            fi
+
+            got_resolvers="$(printf '%s' "$timeline" | sed 's/ resolvers.*//')"
+            got_sql="$(printf '%s' "$timeline" | sed 's/.*resolvers, //; s/ SQL)//')"
+
+            if [ "$got_resolvers" != "$case_resolvers" ]; then
+                step_fail 'shipping cost' "The storefront query $case_label reported $got_resolvers resolvers,
+and chapter 11 prints $case_resolvers.
+
+The difference between the two rows is the chapter's claim: one resolver per
+product and nothing else."
+            fi
+            if [ "$got_sql" != "$EXPECTED_STOREFRONT_SQL" ]; then
+                step_fail 'shipping cost' "The storefront query $case_label reported $got_sql SQL commands,
+and chapter 11 prints $EXPECTED_STOREFRONT_SQL for both rows.
+
+A computed field that reaches for its own DataLoader instead of the one price
+already uses would show up here and nowhere else."
+            fi
+        done
+        step_ok "a computed field costs $((EXPECTED_RESOLVERS_WITH_SHIPPING - EXPECTED_RESOLVERS_WITHOUT_SHIPPING)) more resolvers and no more SQL"
 
         # Down rather than stop, and now rather than in the trap, because the
         # federated-wire section below wants this port.

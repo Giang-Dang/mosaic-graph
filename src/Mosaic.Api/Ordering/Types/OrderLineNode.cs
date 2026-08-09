@@ -23,8 +23,19 @@ public static partial class OrderLineNode
     /// It is worth being clear about what that costs. The old version could
     /// tell you that a line sold a product the catalog has never heard of,
     /// because it looked. This one cannot, and neither can anything else in
-    /// this service. A dangling identifier now surfaces as a null product at
-    /// the router, one hop later and one service further away.
+    /// this service. A dangling identifier is now Catalog's problem, one hop
+    /// later and one service further away.
+    /// </para>
+    /// <para>
+    /// It does not surface as a null product, which is what this comment said
+    /// until chapter 11 measured what actually happens. The field is
+    /// <c>Product!</c> inside <c>lines: [OrderLine!]!</c>, so an entity Catalog
+    /// cannot resolve null-propagates outwards and takes the whole response
+    /// with it. Chapter 11's rule is that a field crossing a subgraph boundary
+    /// should be nullable unless referential integrity is guaranteed across a
+    /// network. Here it is not, and the only reason this has never bitten is
+    /// that the seeder builds every line from a product it just wrote. Chapter
+    /// 12 has to decide this field by field.
     /// </para>
     /// <para>
     /// It is also worth being clear about what it buys. This is no longer a

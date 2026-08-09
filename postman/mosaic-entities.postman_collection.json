@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "9c4d1f77-2b58-4a03-9e6d-4f81c05a7b32",
     "name": "Mosaic entities - chapter 11",
-    "description": "What the second hop actually costs, as chapter 11 of Federated GraphQL on .NET measures it.\n\nThree of these go to the router and two go to a subgraph directly, because the whole subject is the difference. @requires is only visible in a query plan; what a subgraph does with a representation is only visible when you send it one yourself.\n\nStart the two subgraphs and the router before running it:\n\n    docker compose up -d mosaic-db\n    dotnet run --project src/Mosaic.Catalog\n    dotnet run --project src/Mosaic.Api\n    docker compose up -d mosaic-router\n\nNothing here writes, so the collection can be run twice against the same processes.",
+    "description": "What the second hop actually costs, as chapter 11 of Federated GraphQL on .NET measures it.\n\nTwo of these go to the router and three go to a subgraph directly, because the whole subject is the difference. @requires is only visible in a query plan; what a subgraph does with a representation is only visible when you send it one yourself.\n\nStart the two subgraphs and the router before running it:\n\n    docker compose up -d mosaic-db\n    dotnet run --project src/Mosaic.Catalog\n    dotnet run --project src/Mosaic.Api\n    docker compose up -d mosaic-router\n\nNothing here writes, so the collection can be run twice against the same processes.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [

@@ -151,6 +151,34 @@ $EntitiesPostman    = Join-Path $RepoRoot 'postman' 'mosaic-entities.postman_col
 $EntitiesPostmanEnv = Join-Path $RepoRoot 'postman' 'mosaic-entities.local.postman_environment.json'
 $EntityCases        = Join-Path $RepoRoot 'scripts' 'entity-cases.mjs'
 
+# What a computed field costs the service that computes it. Chapter 11 prints
+# these four numbers, so the gate produces them: the same storefront query
+# through the router with and without Product.shippingCost, read off Mosaic's
+# own request timeline. They are counts rather than timings, which is why they
+# belong in a gate at all - decision 62 keeps milliseconds out of one.
+#
+# The selection deliberately stops short of Product.reviews. A resolver runs
+# per review author, so the count of a query that walks the reviews depends on
+# how many reviews exist, and the Postman collection above submits one. Left in,
+# these numbers would be true only of a database nothing had written to yet,
+# which is the opposite of what a gate wants. averageRating still reaches the
+# review table, so the statement count is honest.
+$ShippingStorefrontQuery =
+    '{ browseProducts(first: 25) { nodes { title price { amount currency } ' +
+    'shippingCost { amount currency } availableQuantity averageRating } } }'
+
+$PlainStorefrontQuery =
+    '{ browseProducts(first: 25) { nodes { title price { amount currency } ' +
+    'availableQuantity averageRating } } }'
+
+# 76 is one root field plus three resolvers for each of 25 products; 101 is the
+# same with one more per product. The statement count does not move, because
+# shippingCost takes the same DataLoader price does and finds the key already
+# in the batch.
+$ExpectedResolversWithoutShipping = 76
+$ExpectedResolversWithShipping    = 101
+$ExpectedStorefrontSql            = 3
+
 # -- chapter 7's federated-wire sample ---------------------------------------
 
 $WireDir            = Join-Path $RepoRoot 'samples' 'federated-wire'
@@ -1494,6 +1522,64 @@ try {
                 }
                 Write-Ok 'entities resolve the eleven ways chapter 11 says they do'
             }
+
+            # What the computed field costs, off Mosaic's own timeline. Both
+            # documents are warmed first, because a cold request measures the
+            # runtime warming up rather than the query, and both are measured in
+            # the same run so the two numbers can be compared at all.
+            foreach ($warm in 1..3) {
+                Invoke-Gql -Url $MosaicRouterUrl -Query $PlainStorefrontQuery -Step 'storefront warm-up' | Out-Null
+                Invoke-Gql -Url $MosaicRouterUrl -Query $ShippingStorefrontQuery -Step 'storefront warm-up' | Out-Null
+            }
+
+            $timelinePattern = '(\d+) resolvers, (\d+) SQL\)'
+            $shippingCases = @(
+                @{ Name = 'without shippingCost'; Query = $PlainStorefrontQuery; Resolvers = $ExpectedResolversWithoutShipping }
+                @{ Name = 'with shippingCost';    Query = $ShippingStorefrontQuery; Resolvers = $ExpectedResolversWithShipping }
+            )
+
+            foreach ($shippingCase in $shippingCases) {
+                $before = ([regex]::Matches((Get-LogText $apiStdout), $timelinePattern)).Count
+                Invoke-Gql -Url $MosaicRouterUrl -Query $shippingCase.Query -Step "storefront $($shippingCase.Name)" | Out-Null
+
+                $deadline = (Get-Date).AddSeconds(15)
+                $match = $null
+                while ((Get-Date) -lt $deadline) {
+                    $all = [regex]::Matches((Get-LogText $apiStdout), $timelinePattern)
+                    if ($all.Count -gt $before) {
+                        $match = $all[$all.Count - 1]
+                        break
+                    }
+                    Start-Sleep -Milliseconds 200
+                }
+
+                if ($null -eq $match) {
+                    Stop-Verify 'shipping cost' (Join-Lines @(
+                        "Mosaic logged no timeline for the storefront query $($shippingCase.Name)."
+                        ''
+                        (Get-LogTail $apiStdout)))
+                }
+
+                $resolvers = [int] $match.Groups[1].Value
+                $sql = [int] $match.Groups[2].Value
+
+                if ($resolvers -ne $shippingCase.Resolvers) {
+                    Stop-Verify 'shipping cost' (Join-Lines @(
+                        "The storefront query $($shippingCase.Name) reported $resolvers resolvers,"
+                        "and chapter 11 prints $($shippingCase.Resolvers)."
+                        'The difference between the two rows is the chapter''s claim: one'
+                        'resolver per product and nothing else.'))
+                }
+                if ($sql -ne $ExpectedStorefrontSql) {
+                    Stop-Verify 'shipping cost' (Join-Lines @(
+                        "The storefront query $($shippingCase.Name) reported $sql SQL commands,"
+                        "and chapter 11 prints $ExpectedStorefrontSql for both rows."
+                        'A computed field that reaches for its own DataLoader instead of the'
+                        'one price already uses would show up here and nowhere else.'))
+                }
+            }
+            Write-Ok ("a computed field costs $($ExpectedResolversWithShipping - $ExpectedResolversWithoutShipping) " +
+                "more resolvers and no more SQL")
 
             # Down rather than stop, and now rather than in the finally block,
             # because the federated-wire section below wants this port.
