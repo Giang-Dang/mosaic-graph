@@ -1,4 +1,5 @@
 using GreenDonut;
+using GreenDonut.Data;
 using Mosaic.Api.Reviews.Model;
 
 namespace Mosaic.Api.Reviews.Data;
@@ -24,22 +25,45 @@ namespace Mosaic.Api.Reviews.Data;
 /// </remarks>
 public static class ReviewDataLoaders
 {
-    /// <summary>Reviews for many products at once, grouped by product.</summary>
+    /// <summary>One page of reviews for many products at once.</summary>
     /// <remarks>
-    /// The return type is what makes this a <em>group</em> DataLoader rather
-    /// than a batch one, and the difference is what a missing key produces. An
-    /// <c>ILookup</c> answers an unknown key with an empty sequence, which is
-    /// exactly right for a product nobody has reviewed. Had this returned
-    /// <c>Dictionary&lt;Guid, Review[]&gt;</c> it would still have compiled and
-    /// still have batched, and three of the twenty-five products would have
-    /// come back null.
+    /// <para>
+    /// Chapter 4's version returned an <c>ILookup&lt;Guid, Review&gt;</c> and was
+    /// a <em>group</em> DataLoader. Chapter 5 turned <c>Product.reviews</c> into
+    /// a connection, and a page is not a sequence, so this is a batch DataLoader
+    /// again - which brings back the null-for-a-missing-key behaviour the
+    /// <c>ILookup</c> was chosen to avoid. The empty page for an unreviewed
+    /// product is supplied by the service instead.
+    /// </para>
+    /// <para>
+    /// <c>PagingArguments</c> is not an ordinary service parameter. The
+    /// generator recognises it and reads it out of the DataLoader's own state,
+    /// which is where the <c>.With(pagingArguments)</c> call in the resolver
+    /// puts it. That call also branches the DataLoader: a distinct page shape
+    /// gets a distinct branch with its own cache and its own batch, so two
+    /// fields asking for different page sizes in one request cannot be handed
+    /// each other's answers.
+    /// </para>
     /// </remarks>
     [DataLoader]
-    public static Task<ILookup<Guid, Review>> GetReviewsByProductIdAsync(
+    public static Task<Dictionary<Guid, Page<Review>>> GetReviewsByProductIdAsync(
         IReadOnlyList<Guid> productIds,
+        PagingArguments pagingArguments,
         ReviewsService reviews,
         CancellationToken cancellationToken)
-        => reviews.GetReviewsByProductIdsAsync(productIds, cancellationToken);
+        => reviews.GetReviewPagesByProductIdsAsync(productIds, pagingArguments, cancellationToken);
+
+    /// <summary>Reviews by identifier, in one batch.</summary>
+    /// <remarks>
+    /// Backs <c>Review</c>'s node resolver. <c>nodes(ids:)</c> can ask for
+    /// several at once, so this is a batch rather than a single lookup.
+    /// </remarks>
+    [DataLoader]
+    public static Task<IReadOnlyDictionary<Guid, Review>> GetReviewByIdAsync(
+        IReadOnlyList<Guid> ids,
+        ReviewsService reviews,
+        CancellationToken cancellationToken)
+        => reviews.GetReviewsByIdsAsync(ids, cancellationToken);
 
     /// <summary>Mean ratings for many products at once.</summary>
     /// <remarks>

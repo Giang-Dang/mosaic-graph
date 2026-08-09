@@ -22,6 +22,12 @@
     <PackageVersion Include="HotChocolate.Types.Analyzers" Version="$(HotChocolateVersion)" />
     <PackageVersion Include="HotChocolate.Data" Version="$(HotChocolateVersion)" />
     <PackageVersion Include="HotChocolate.Data.EntityFramework" Version="$(HotChocolateVersion)" />
+
+    <!-- Chapter 5 turns on subscriptions. The in-memory provider ships as its
+         own package rather than inside HotChocolate.AspNetCore, and it is the
+         only provider that needs no infrastructure. Redis, NATS and Postgres
+         providers exist for the multi-instance case chapter 14 deals with. -->
+    <PackageVersion Include="HotChocolate.Subscriptions.InMemory" Version="$(HotChocolateVersion)" />
   </ItemGroup>
 
   <ItemGroup>

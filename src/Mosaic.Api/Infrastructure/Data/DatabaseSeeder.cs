@@ -31,6 +31,7 @@ namespace Mosaic.Api.Infrastructure.Data;
 /// </remarks>
 public sealed class DatabaseSeeder(
     IDbContextFactory<MosaicDbContext> contextFactory,
+    IConfiguration configuration,
     CatalogSeedData catalog,
     PricingSeedData pricing,
     InventorySeedData inventory,
@@ -43,6 +44,27 @@ public sealed class DatabaseSeeder(
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+
+        // Chapter 5 gave Mosaic a mutation, and a service that can be written
+        // to cannot be verified against a database left over from the last run:
+        // the Postman collection submits a review, so a second run would start
+        // with 121 of them and the seeded-count assertions would fail. Setting
+        // MOSAIC_RESET_DATABASE=1 drops the schema first. scripts/verify.ps1
+        // sets it; nothing else should.
+        //
+        // Read as a string and compared by hand, which looks like the long way
+        // round and is not. GetValue<bool> accepts only "true" and "false", and
+        // throws on "1" - not a fallback to false, an unhandled exception that
+        // takes the host down at start-up. The repository's other switch is
+        // MOSAIC_KEEP_DATABASE=1, so the shape a reader will copy is the shape
+        // that would have crashed the service.
+        var reset = configuration["MOSAIC_RESET_DATABASE"];
+        if (reset is "1" or "true" or "True" or "TRUE")
+        {
+            logger.LogWarning(
+                "MOSAIC_RESET_DATABASE is set. Dropping the schema and everything in it.");
+            await db.Database.EnsureDeletedAsync(cancellationToken);
+        }
 
         var created = await db.Database.EnsureCreatedAsync(cancellationToken);
 

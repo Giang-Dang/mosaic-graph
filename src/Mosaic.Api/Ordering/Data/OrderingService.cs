@@ -39,4 +39,24 @@ public sealed class OrderingService(MosaicDbContext db, ServiceCallCounter count
             .ThenBy(o => o.Id)
             .ToListAsync(cancellationToken);
     }
+
+    /// <summary>Several orders by their identifiers, keyed for the caller.</summary>
+    /// <remarks>
+    /// Added in chapter 5, and only because <c>Order</c> implements <c>Node</c>.
+    /// Nothing in Mosaic had ever wanted an order by its own identifier: the
+    /// only way to an order was through the customer who placed it. Making a
+    /// type refetchable means promising that an identifier is enough to find
+    /// it, and that promise has to be kept somewhere.
+    /// </remarks>
+    public async Task<IReadOnlyDictionary<Guid, Order>> GetOrdersByIdsAsync(
+        IReadOnlyList<Guid> ids,
+        CancellationToken cancellationToken)
+    {
+        counter.RecordLookup();
+
+        return await db.Orders
+            .AsNoTracking()
+            .Where(o => ids.Contains(o.Id))
+            .ToDictionaryAsync(o => o.Id, cancellationToken);
+    }
 }

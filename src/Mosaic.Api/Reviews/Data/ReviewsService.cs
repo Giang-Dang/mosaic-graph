@@ -1,3 +1,4 @@
+using GreenDonut.Data;
 using Microsoft.EntityFrameworkCore;
 using Mosaic.Api.Infrastructure;
 using Mosaic.Api.Infrastructure.Data;
@@ -62,35 +63,55 @@ public sealed class ReviewsService(MosaicDbContext db, ServiceCallCounter counte
     }
 
     /// <summary>
-    /// Every review written about any of several products, grouped by product
-    /// and oldest first inside each group.
+    /// One page of reviews for each of several products, oldest first inside
+    /// each page.
     /// </summary>
     /// <remarks>
-    /// One statement, whatever the number of keys: <c>Contains</c> over a list
-    /// becomes <c>WHERE product_id = ANY(@keys)</c> against PostgreSQL, which
-    /// is a single parameter rather than one per key, so the plan is reusable
-    /// no matter how many products the page holds.
     /// <para>
-    /// The grouping happens in memory, on rows that have already arrived. Doing
-    /// it in SQL would mean a <c>GROUP BY</c> that has to aggregate the review
-    /// bodies into arrays, which is more work for the database and no less for
-    /// the process.
+    /// This replaced the <c>ILookup</c> version in chapter 5, when
+    /// <c>Product.reviews</c> became a connection. Fetching every review for
+    /// every product on the page and then slicing in memory would have made the
+    /// connection a lie: the point of paging a child collection is that the
+    /// rows nobody asked for never leave the database.
+    /// </para>
+    /// <para>
+    /// <c>ToBatchPageAsync</c> is what makes that possible in one statement. It
+    /// rewrites the query into a window over the parent key, so PostgreSQL
+    /// numbers each product's reviews and returns only the first <c>n</c> of
+    /// each. The <c>OrderBy</c> here is not decoration either: keyset
+    /// pagination reads the cursor keys off the ordering, and the tiebreaker on
+    /// the identifier is what makes that ordering total.
+    /// </para>
+    /// <para>
+    /// The gap-filling loop at the end is the part worth remembering. A
+    /// dictionary answers an unknown key with null, and three of Mosaic's
+    /// twenty-five products have never been reviewed. Chapter 4 solved exactly
+    /// this by returning an <c>ILookup</c>, which is not available here because
+    /// the value is a page rather than a sequence, so the empty answer has to
+    /// be supplied deliberately. Delete these two lines and three products
+    /// answer null for a non-nullable field.
     /// </para>
     /// </remarks>
-    public async Task<ILookup<Guid, Review>> GetReviewsByProductIdsAsync(
+    public async Task<Dictionary<Guid, Page<Review>>> GetReviewPagesByProductIdsAsync(
         IReadOnlyList<Guid> productIds,
+        PagingArguments pagingArguments,
         CancellationToken cancellationToken)
     {
         counter.RecordLookup();
 
-        var reviews = await db.Reviews
+        var pages = await db.Reviews
             .AsNoTracking()
             .Where(r => productIds.Contains(r.ProductId))
             .OrderBy(r => r.CreatedAt)
             .ThenBy(r => r.Id)
-            .ToListAsync(cancellationToken);
+            .ToBatchPageAsync(r => r.ProductId, pagingArguments, cancellationToken);
 
-        return reviews.ToLookup(r => r.ProductId);
+        foreach (var productId in productIds)
+        {
+            pages.TryAdd(productId, Page<Review>.Empty);
+        }
+
+        return pages;
     }
 
     /// <summary>
@@ -119,5 +140,84 @@ public sealed class ReviewsService(MosaicDbContext db, ServiceCallCounter counte
             .ToListAsync(cancellationToken);
 
         return averages.ToDictionary(a => a.ProductId, a => a.Average);
+    }
+
+    /// <summary>Several reviews by their identifiers, keyed for the caller.</summary>
+    /// <remarks>
+    /// Added in chapter 5 for the same reason as Ordering's: <c>Review</c>
+    /// implements <c>Node</c>, and a refetchable type owes the graph a way to
+    /// find it by identifier alone.
+    /// </remarks>
+    public async Task<IReadOnlyDictionary<Guid, Review>> GetReviewsByIdsAsync(
+        IReadOnlyList<Guid> ids,
+        CancellationToken cancellationToken)
+    {
+        counter.RecordLookup();
+
+        return await db.Reviews
+            .AsNoTracking()
+            .Where(r => ids.Contains(r.Id))
+            .ToDictionaryAsync(r => r.Id, cancellationToken);
+    }
+
+    /// <summary>
+    /// Records one customer's review of one product, or refuses with the reason.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Mosaic's first write. Two rules are enforced here because Reviews owns
+    /// them: a rating is between one and five, and a customer reviews a product
+    /// once. Whether the product and the customer exist is checked by the
+    /// caller, which is a boundary that matters later - once Catalog is its own
+    /// service, this domain cannot answer that question at all.
+    /// </para>
+    /// <para>
+    /// The rules are checked before anything is added, and each one throws
+    /// rather than returning a result union. The exception is not what the
+    /// client sees: <c>submitReview</c> declares these as domain errors, so
+    /// each one arrives as a type on the payload.
+    /// </para>
+    /// <para>
+    /// No <c>AsNoTracking</c> on the duplicate check, and it does not need one:
+    /// <c>AnyAsync</c> materialises no entity. The insert itself is the only
+    /// thing in Mosaic that the change tracker has ever been asked to hold.
+    /// </para>
+    /// </remarks>
+    public async Task<Review> SubmitReviewAsync(
+        Guid productId,
+        Guid customerId,
+        int rating,
+        string? body,
+        CancellationToken cancellationToken)
+    {
+        counter.RecordLookup();
+
+        if (rating is < 1 or > 5)
+        {
+            throw new RatingOutOfRangeException(rating);
+        }
+
+        var alreadyReviewed = await db.Reviews
+            .AnyAsync(
+                r => r.ProductId == productId && r.CustomerId == customerId,
+                cancellationToken);
+
+        if (alreadyReviewed)
+        {
+            throw new DuplicateReviewException(productId, customerId);
+        }
+
+        var review = new Review(
+            Guid.CreateVersion7(),
+            productId,
+            customerId,
+            rating,
+            string.IsNullOrWhiteSpace(body) ? null : body.Trim(),
+            DateTimeOffset.UtcNow);
+
+        db.Reviews.Add(review);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return review;
     }
 }

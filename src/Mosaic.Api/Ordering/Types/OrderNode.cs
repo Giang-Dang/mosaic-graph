@@ -1,5 +1,7 @@
+using HotChocolate.Types.Relay;
 using Mosaic.Api.Accounts.Data;
 using Mosaic.Api.Accounts.Model;
+using Mosaic.Api.Ordering.Data;
 using Mosaic.Api.Ordering.Model;
 using Mosaic.Api.Pricing.Model;
 
@@ -15,6 +17,22 @@ public static partial class OrderNode
     /// <summary>The order's global identifier.</summary>
     [ID]
     public static Guid GetId([Parent] Order order) => order.Id;
+
+    /// <summary>Fetches one order from its global identifier.</summary>
+    /// <remarks>
+    /// <c>Order</c> implements <c>Node</c> and <c>OrderLine</c> does not, which
+    /// is the distinction the interface is for. An order has an identity a
+    /// client can hold on to and come back for. A line has no identifier at all
+    /// outside the order it belongs to - chapter 4 gave it a shadow key
+    /// precisely because the domain had none - so promising that one could be
+    /// refetched would be promising something that does not exist.
+    /// </remarks>
+    [NodeResolver]
+    public static async Task<Order?> ResolveOrderAsync(
+        Guid id,
+        IOrderByIdDataLoader orderById,
+        CancellationToken cancellationToken)
+        => await orderById.LoadAsync(id, cancellationToken);
 
     /// <summary>The customer who placed the order.</summary>
     /// <remarks>

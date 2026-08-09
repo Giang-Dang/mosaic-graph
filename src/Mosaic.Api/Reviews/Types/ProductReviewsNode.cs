@@ -1,3 +1,5 @@
+using GreenDonut.Data;
+using HotChocolate.Types.Pagination;
 using Mosaic.Api.Catalog.Model;
 using Mosaic.Api.Reviews.Data;
 using Mosaic.Api.Reviews.Model;
@@ -10,10 +12,10 @@ namespace Mosaic.Api.Reviews.Types;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Both fields are plain lists and plain numbers. There is no connection type
-/// and no page size here, which is a decision rather than an oversight: a
-/// later chapter turns <c>reviews</c> into a Relay connection and needs this
-/// version to compare against.
+/// <c>reviews</c> became a connection in chapter 5. It was a plain
+/// <c>[Review!]!</c> for three chapters, which was always going to end: a field
+/// that returns every row of a growing table has no upper bound on what it
+/// costs to answer. Changing it was a breaking change and the chapter says so.
 /// </para>
 /// <para>
 /// The signatures changed in chapter 4 and the schema did not. A resolver that
@@ -35,12 +37,53 @@ namespace Mosaic.Api.Reviews.Types;
 [ObjectType<Product>]
 public static partial class ProductReviewsNode
 {
-    /// <summary>Everything customers have said about this product.</summary>
-    public static async Task<IReadOnlyList<Review>> GetReviewsAsync(
+    /// <summary>What customers have said about this product, newest page first.</summary>
+    /// <remarks>
+    /// <para>
+    /// Three moving parts, and only one of them is the DataLoader.
+    /// <c>[UseConnection]</c> puts <c>first</c>, <c>after</c>, <c>last</c> and
+    /// <c>before</c> on the field and declares the connection type.
+    /// <c>PagingArguments</c> is those four arguments coerced.
+    /// <c>.With(pagingArguments)</c> hands them to the DataLoader as state,
+    /// and returns a <em>branch</em> of it keyed on a hash of the arguments.
+    /// </para>
+    /// <para>
+    /// The branch is what makes this safe. Twenty-five products asking for
+    /// their first three reviews share one branch, so their keys land in one
+    /// batch and one statement. A field elsewhere in the same request asking
+    /// for a different page gets a different branch, its own cache and its own
+    /// statement, because the two answers are not interchangeable and a shared
+    /// promise cache would hand one of them the other's page.
+    /// </para>
+    /// <para>
+    /// The return type is what makes this field a connection, and that is not
+    /// obvious from the attribute. <c>[UseConnection]</c> only overrides paging
+    /// options for a field that already is one; it is
+    /// <c>PageConnection&lt;Review&gt;</c> that rewrites the schema. Put the
+    /// attribute on a resolver that returns a list and the field stays a list,
+    /// with no error anywhere.
+    /// </para>
+    /// <para>
+    /// The null coalesce is not defensive programming. A batch DataLoader
+    /// answers an unknown key with null, and the service fills every requested
+    /// key with an empty page for exactly that reason, so this should be
+    /// unreachable. It stays because <c>reviews</c> is non-nullable and the
+    /// cost of being wrong is a failed request rather than an empty page.
+    /// </para>
+    /// </remarks>
+    [UseConnection(IncludeTotalCount = true)]
+    public static async Task<PageConnection<Review>> GetReviewsAsync(
         [Parent("Id")] Product product,
         IReviewsByProductIdDataLoader reviewsByProductId,
+        PagingArguments pagingArguments,
         CancellationToken cancellationToken)
-        => await reviewsByProductId.LoadAsync(product.Id, cancellationToken) ?? [];
+    {
+        var page = await reviewsByProductId
+            .With(pagingArguments)
+            .LoadAsync(product.Id, cancellationToken);
+
+        return page ?? Page<Review>.Empty;
+    }
 
     /// <summary>
     /// The mean of this product's ratings, or <c>null</c> if nobody has rated it.

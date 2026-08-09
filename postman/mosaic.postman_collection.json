@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "6f1c2a90-3f4c-4f7a-9a1e-2b7d5c8e4a11",
-    "name": "Mosaic - chapters 02-04",
-    "description": "The development loop for Mosaic's single service, as chapters 2 to 4 of Federated GraphQL on .NET build it.\n\nPoint the `baseUrl` environment variable at a running service (`dotnet run --project src/Mosaic.Api`, or `docker compose up`) and run the collection. Every request carries an assertion, so `newman run` is a smoke test as well as a demonstration.\n\nSince chapter 4 the service needs PostgreSQL: `docker compose up -d mosaic-db` before anything here will answer.\n\nIntrospection only answers when the service runs in the Development environment. HotChocolate 16 disables it everywhere else by default.",
+    "name": "Mosaic - chapters 02-05",
+    "description": "The development loop for Mosaic's single service, as chapters 2 to 5 of Federated GraphQL on .NET build it.\n\nPoint the `baseUrl` environment variable at a running service (`dotnet run --project src/Mosaic.Api`, or `docker compose up`) and run the collection. Every request carries an assertion, so `newman run` is a smoke test as well as a demonstration.\n\nSince chapter 4 the service needs PostgreSQL: `docker compose up -d mosaic-db` before anything here will answer.\n\nChapter 5 changed two things that run through the whole collection. Every `id` is an opaque node id rather than a Guid, so a request that needs one reads it from a collection variable an earlier request stored, and `Product.reviews` is a connection rather than a list. Order matters too: the mutations at the bottom write a row, so every assertion about a seeded count sits above them. Run this against a freshly seeded database.\n\nIntrospection only answers when the service runs in the Development environment. HotChocolate 16 disables it everywhere else by default.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -26,7 +26,20 @@
               "",
               "pm.test(\"the seeded catalog holds 25 products\", function () {",
               "    pm.expect(body.data.products).to.have.lengthOf(25);",
-              "});"
+              "});",
+              "",
+              "const first = body.data.products.find(function (p) { return p.sku === \"MOS-FRN-0001\"; });",
+              "",
+              "// Every [ID] argument below wants an opaque node id, and there is no way",
+              "// to type one by hand. The collection carries one from here instead.",
+              "pm.test(\"MOS-FRN-0001 is in the catalog, with an id to reuse\", function () {",
+              "    pm.expect(first, \"MOS-FRN-0001 is missing from the catalog\").to.be.an(\"object\");",
+              "    pm.expect(first.id).to.be.a(\"string\").that.is.not.empty;",
+              "});",
+              "",
+              "if (first) {",
+              "    pm.collectionVariables.set(\"firstProductId\", first.id);",
+              "}"
             ]
           }
         }
@@ -55,7 +68,7 @@
             "graphql"
           ]
         },
-        "description": "The smallest useful query. If this fails, nothing else in the collection is worth reading."
+        "description": "The smallest useful query. If this fails, nothing else in the collection is worth reading.\n\nChapter 5 hung a deprecation on `products`, which changes nothing about what it returns. It also stops the request being a pure read: the id of the first product goes into a collection variable, because from here on an `[ID]` argument only accepts an opaque node id and I cannot invent one."
       },
       "response": []
     },
@@ -82,6 +95,7 @@
               "pm.test(\"Catalog answered\", function () {",
               "    pm.expect(product.sku).to.eql(\"MOS-FRN-0001\");",
               "    pm.expect(product.title).to.be.a(\"string\");",
+              "    pm.expect(product.id).to.eql(pm.collectionVariables.get(\"firstProductId\"));",
               "});",
               "",
               "pm.test(\"Pricing answered\", function () {",
@@ -93,9 +107,12 @@
               "    pm.expect(product.availableQuantity).to.be.a(\"number\");",
               "});",
               "",
-              "pm.test(\"Reviews answered, and reached into Accounts for each author\", function () {",
-              "    pm.expect(product.reviews).to.be.an(\"array\").that.is.not.empty;",
-              "    pm.expect(product.reviews[0].author.displayName).to.be.a(\"string\");",
+              "pm.test(\"Reviews answered a page, and reached into Accounts for each author\", function () {",
+              "    pm.expect(product.reviews.totalCount).to.eql(12);",
+              "    pm.expect(product.reviews.nodes).to.be.an(\"array\");",
+              "    pm.expect(product.reviews.nodes).to.have.lengthOf(3);",
+              "    pm.expect(product.reviews.pageInfo.hasNextPage).to.eql(true);",
+              "    pm.expect(product.reviews.nodes[0].author.displayName).to.be.a(\"string\");",
               "});"
             ]
           }
@@ -112,8 +129,8 @@
         "body": {
           "mode": "graphql",
           "graphql": {
-            "query": "query ProductPage($id: ID!) {\n  productById(id: $id) {\n    id\n    sku\n    title\n    description\n    category\n    price {\n      amount\n      currency\n    }\n    availableQuantity\n    averageRating\n    reviews {\n      rating\n      body\n      createdAt\n      author {\n        displayName\n      }\n    }\n  }\n}",
-            "variables": "{\n  \"id\": \"a0000000-0000-4000-8000-000000000001\"\n}"
+            "query": "query ProductPage($id: ID!) {\n  productById(id: $id) {\n    id\n    sku\n    title\n    description\n    category\n    price {\n      amount\n      currency\n    }\n    availableQuantity\n    averageRating\n    reviews(first: 3) {\n      totalCount\n      pageInfo {\n        hasNextPage\n      }\n      nodes {\n        rating\n        body\n        createdAt\n        author {\n          displayName\n        }\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"id\": \"{{firstProductId}}\"\n}"
           }
         },
         "url": {
@@ -125,7 +142,7 @@
             "graphql"
           ]
         },
-        "description": "One request assembled from four domains: Catalog owns the identity, Pricing the price, Inventory the stock, Reviews the opinions, and Reviews in turn asks Accounts who wrote each one. This is the query chapter 1 promised and the one the whole book pulls apart.\n\nWatch the service log while this runs. The lookup count it prints is the honest cost of doing it this way."
+        "description": "One request assembled from four domains: Catalog owns the identity, Pricing the price, Inventory the stock, Reviews the opinions, and Reviews in turn asks Accounts who wrote each one. This is the query chapter 1 promised and the one the whole book pulls apart.\n\nTwo things moved in chapter 5. The id is no longer a Guid I can type into the Variables pane, so it arrives in a collection variable the previous request stored, and `reviews` is a connection, so it takes a page size and answers under `nodes`.\n\nWatch the service log while this runs. The lookup count it prints is the honest cost of doing it this way."
       },
       "response": []
     },
@@ -179,7 +196,68 @@
             "graphql"
           ]
         },
-        "description": "The same document, reused with a different variable. Editing the Variables pane rather than the query is the habit worth forming: the document stays constant, which is what makes persisted operations possible later."
+        "description": "The same document, reused with a different variable. Editing the Variables pane rather than the query is the habit worth forming: the document stays constant, which is what makes persisted operations possible later.\n\nThe sku is still a plain string, which is why this is the lookup to reach for when a request needs a specific product. Nothing about it changed when ids became opaque."
+      },
+      "response": []
+    },
+    {
+      "name": "A product, refetched by node",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const node = body.data.node;",
+              "",
+              "pm.test(\"the id carried its own type back\", function () {",
+              "    pm.expect(node, \"node resolved to null\").to.be.an(\"object\");",
+              "    pm.expect(node.__typename).to.eql(\"Product\");",
+              "    pm.expect(node.sku).to.eql(\"MOS-FRN-0001\");",
+              "});",
+              "",
+              "pm.test(\"the id that went out is the id that came back\", function () {",
+              "    pm.expect(node.id).to.eql(pm.collectionVariables.get(\"firstProductId\"));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query Refetch($id: ID!) {\n  node(id: $id) {\n    __typename\n    id\n    ... on Product {\n      sku\n      title\n    }\n  }\n}",
+            "variables": "{\n  \"id\": \"{{firstProductId}}\"\n}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "Global object identification, in one request. The id came back from an earlier query, went out again as an opaque string, and `node` returned the same object without the caller saying what it was looking for. That is the whole point: the type is inside the id.\n\n`node` is typed as the `Node` interface, so `id` is the only field selectable without a fragment. The inline fragment is how a client reaches anything else, and it is the same shape a cache refetch generates."
       },
       "response": []
     },
@@ -262,6 +340,14 @@
               "    [\"Product\", \"Money\", \"Review\", \"Customer\", \"Order\", \"OrderLine\"].forEach(function (n) {",
               "        pm.expect(names).to.include(n);",
               "    });",
+              "});",
+              "",
+              "// OrderLine is the interesting absence. It has no identity outside the",
+              "// order that holds it, so it is not refetchable and must not implement Node.",
+              "pm.test(\"four types, and only four, can be refetched by id\", function () {",
+              "    const refetchable = body.data.__type.possibleTypes.map(function (t) { return t.name; }).sort();",
+              "    pm.expect(body.data.__type.kind).to.eql(\"INTERFACE\");",
+              "    pm.expect(refetchable).to.eql([\"Customer\", \"Order\", \"Product\", \"Review\"]);",
               "});"
             ]
           }
@@ -278,7 +364,7 @@
         "body": {
           "mode": "graphql",
           "graphql": {
-            "query": "{\n  __schema {\n    queryType {\n      name\n    }\n    types {\n      name\n    }\n  }\n}",
+            "query": "{\n  __schema {\n    queryType {\n      name\n    }\n    types {\n      name\n    }\n  }\n  __type(name: \"Node\") {\n    kind\n    possibleTypes {\n      name\n    }\n  }\n}",
             "variables": "{}"
           }
         },
@@ -291,7 +377,7 @@
             "graphql"
           ]
         },
-        "description": "The query Postman itself runs when it fetches a schema, written out by hand so you can see what the tooling is doing.\n\nThis is also the request that fails first when the service is not running in Development: HotChocolate 16 disables introspection outside it by default, and the answer becomes an HC0046 error rather than a schema."
+        "description": "Most of the query Postman itself runs when it fetches a schema, written out by hand so you can see what the tooling is doing.\n\nChapter 5 added `Node`, so the same document also asks which types implement it. That list is the public statement of what this service considers an entity, and it is worth asserting on: a type slipping into it, or out of it, changes what every cache in front of the service can do.\n\nThis is also the request that fails first when the service is not running in Development: HotChocolate 16 disables introspection outside it by default, and the answer becomes an HC0046 error rather than a schema."
       },
       "response": []
     },
@@ -315,9 +401,15 @@
               "    pm.expect(body).to.not.have.property(\"data\");",
               "});",
               "",
-              "pm.test(\"the cost analyzer reported its numbers\", function () {",
-              "    pm.expect(body.extensions.operationCost.fieldCost).to.eql(30);",
-              "    pm.expect(body.extensions.operationCost.typeCost).to.eql(4);",
+              "// Pinned again for chapter 5. They moved when reviews became a connection:",
+              "// at tag ch04 this same query cost 30 and 4, and the analyzer had no way to",
+              "// know how many reviews a product would return. The connection publishes a",
+              "// @listSize whose slicingArguments name first and last, so the cost now",
+              "// tracks the page the client asked for: first: 5 costs 71, first: 50 costs",
+              "// 521. That is the argument for connections in one number.",
+              "pm.test(\"the cost analyzer reported the numbers chapter 5 quotes\", function () {",
+              "    pm.expect(body.extensions.operationCost.fieldCost).to.eql(41);",
+              "    pm.expect(body.extensions.operationCost.typeCost).to.eql(7);",
               "});"
             ]
           }
@@ -338,7 +430,7 @@
         "body": {
           "mode": "graphql",
           "graphql": {
-            "query": "{\n  products {\n    title\n    reviews {\n      rating\n      author {\n        displayName\n      }\n    }\n  }\n}",
+            "query": "{\n  products {\n    title\n    reviews(first: 2) {\n      nodes {\n        rating\n        author {\n          displayName\n        }\n      }\n    }\n  }\n}",
             "variables": "{}"
           }
         },
@@ -351,7 +443,7 @@
             "graphql"
           ]
         },
-        "description": "The catalog-with-reviews query, sent with the GraphQL-Cost: validate header. The request is parsed, validated and costed, then stops: there is no data key at all. Three async resolver fields at the default weight of 10 make a field cost of 30. Chapter 3 uses this to show that a request can leave the pipeline from the middle of it."
+        "description": "The catalog-with-reviews query, sent with the GraphQL-Cost: validate header. The request is parsed, validated and costed, then stops: there is no data key at all. Chapter 3 uses this to show that a request can leave the pipeline from the middle of it.\n\nThe shape changed underneath it in chapter 5. `reviews` is a connection now and has to carry a page size, and the reported cost moved with it, so the assertion below checks that the analyzer answered rather than pinning last chapter's figures."
       },
       "response": []
     },
@@ -443,13 +535,20 @@
               "    pm.expect(titles).to.eql(sorted);",
               "});",
               "",
-              "// A projected id that was never selected comes back as an all-zero",
-              "// Guid rather than as an error, which is the quietest way this can",
-              "// go wrong. Encoded, that Guid is a recognisable constant.",
+              "// A projected id that was never selected comes back as an all-zero Guid",
+              "// rather than as an error, and since chapter 5 that Guid is wrapped in an",
+              "// opaque node id where nothing about it looks wrong. The only way to see it",
+              "// is to decode: \"Product:\" in ASCII, then the 16 bytes of the key.",
               "pm.test(\"the projection kept the identifier\", function () {",
               "    page.nodes.forEach(function (node) {",
-              "        const raw = Buffer.from(node.id, \"base64\").toString(\"utf8\");",
-              "        pm.expect(raw).to.not.include(\"00000000-0000-0000-0000-000000000000\");",
+              "        const raw = Buffer.from(node.id, \"base64\");",
+              "        pm.expect(raw.length, node.title).to.eql(24);",
+              "        pm.expect(raw.toString(\"utf8\", 0, 8), node.title).to.eql(\"Product:\");",
+              "        let blank = true;",
+              "        for (let i = 8; i < raw.length; i++) {",
+              "            if (raw[i] !== 0) { blank = false; break; }",
+              "        }",
+              "        pm.expect(blank, node.title + \" answered with an all-zero key\").to.eql(false);",
               "    });",
               "});",
               "",
@@ -482,7 +581,7 @@
             "graphql"
           ]
         },
-        "description": "The first page of browseProducts. Three products, ordered by title because the resolver supplies that order when the caller does not, and a cursor that the next request pages from.\n\nThe identifiers matter more than they look. `id` is produced by a resolver rather than read from a column, so the projection only selects the underlying key because the resolver declares `[Parent(\"Id\")]`. Without that declaration every product here answers with an all-zero Guid and the assertion below is what catches it."
+        "description": "The first page of browseProducts. Three products, ordered by title because the resolver supplies that order when the caller does not, and a cursor that the next request pages from.\n\nThe identifiers matter more than they look. `id` is produced by a resolver rather than read from a column, so the projection only selects the underlying key because the resolver declares `[Parent(\"Id\")]`. Without that declaration every product here answers with an all-zero Guid, and chapter 5 made that harder to spot rather than easier: the Guid is now base64 inside an opaque node id, so it looks as plausible as any other. The assertion below decodes the id and reads the bytes, which is the only honest way to check it."
       },
       "response": []
     },
@@ -602,6 +701,535 @@
           ]
         },
         "description": "The `where` and `order` arguments come from `[UseFiltering]` and `[UseSorting]`; both end up inside the one statement the resolver runs, along with a `LIMIT`. The `averageRating` beside them does not: it is a DataLoader-backed field of the Reviews domain, batched across the page's products."
+      },
+      "response": []
+    },
+    {
+      "name": "A page of reviews",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const page = body.data.productBySku.reviews;",
+              "",
+              "pm.test(\"twelve reviews in all, two of them on this page\", function () {",
+              "    pm.expect(page.totalCount).to.eql(12);",
+              "    pm.expect(page.nodes).to.have.lengthOf(2);",
+              "    pm.expect(page.pageInfo.hasNextPage).to.eql(true);",
+              "    pm.expect(page.pageInfo.endCursor).to.be.a(\"string\").that.is.not.empty;",
+              "});",
+              "",
+              "pm.test(\"every review on the page names its author\", function () {",
+              "    page.nodes.forEach(function (review) {",
+              "        pm.expect(review.rating).to.be.a(\"number\");",
+              "        pm.expect(review.author.displayName).to.be.a(\"string\").that.is.not.empty;",
+              "    });",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"reviewCursor\", page.pageInfo.endCursor);",
+              "pm.collectionVariables.set(",
+              "    \"firstReviewPageIds\",",
+              "    JSON.stringify(page.nodes.map(function (r) { return r.id; })));",
+              "pm.collectionVariables.set(\"reviewerId\", page.nodes[0].author.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query ReviewPage($sku: String!) {\n  productBySku(sku: $sku) {\n    sku\n    reviews(first: 2) {\n      totalCount\n      pageInfo {\n        hasNextPage\n        endCursor\n      }\n      nodes {\n        id\n        rating\n        author {\n          id\n          displayName\n        }\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"sku\": \"MOS-FRN-0001\"\n}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "`reviews` stopped being a list in chapter 5. It pages the way the catalog does, so a product with a thousand opinions no longer drags all of them through memory to answer a question about two.\n\nThe first product has twelve reviews, which makes it the one worth asking. Two go into this page and the other ten are what `hasNextPage` is reporting.\n\nThe cursor and the first author both go into collection variables. The author matters later: the mutation at the bottom of this collection needs a customer who exists, and there is no longer any way to write a customer id by hand."
+      },
+      "response": []
+    },
+    {
+      "name": "The next page of reviews, by cursor",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const nodes = body.data.productBySku.reviews.nodes;",
+              "const alreadySeen = JSON.parse(pm.collectionVariables.get(\"firstReviewPageIds\"));",
+              "",
+              "pm.test(\"two more reviews, and none of them the first two\", function () {",
+              "    pm.expect(nodes).to.have.lengthOf(2);",
+              "    nodes.forEach(function (review) {",
+              "        pm.expect(alreadySeen, \"the cursor handed back a review from page one\")",
+              "            .to.not.include(review.id);",
+              "    });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query NextReviewPage($sku: String!, $after: String) {\n  productBySku(sku: $sku) {\n    reviews(first: 2, after: $after) {\n      nodes {\n        id\n        rating\n        author {\n          displayName\n        }\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"sku\": \"MOS-FRN-0001\",\n  \"after\": \"{{reviewCursor}}\"\n}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The same connection, paged from the cursor the previous request stored.\n\nThe assertion is about identity rather than count, and deliberately so. A connection that silently ignores its `after` argument still returns two nodes and still looks healthy; what it cannot do is return two reviews the first page did not already show."
+      },
+      "response": []
+    },
+    {
+      "name": "A product nobody has reviewed",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const product = body.data.productBySku;",
+              "",
+              "// The bug this guards against is nodes coming back missing rather than",
+              "// empty. A client reads undefined, maps over it, and falls over a long",
+              "// way from the resolver that caused it.",
+              "pm.test(\"an empty connection, not a missing one\", function () {",
+              "    pm.expect(product.sku).to.eql(\"MOS-KIT-0006\");",
+              "    pm.expect(product.reviews, \"the reviews connection is absent\").to.have.property(\"nodes\");",
+              "    pm.expect(product.reviews.nodes, \"nodes is not an array\").to.be.an(\"array\");",
+              "    pm.expect(product.reviews.nodes).to.have.lengthOf(0);",
+              "    pm.expect(product.reviews.totalCount).to.eql(0);",
+              "});",
+              "",
+              "pm.test(\"and no page after it either\", function () {",
+              "    pm.expect(product.reviews.pageInfo.hasNextPage).to.eql(false);",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"unreviewedProductId\", product.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "query Unreviewed($sku: String!) {\n  productBySku(sku: $sku) {\n    id\n    sku\n    title\n    reviews(first: 5) {\n      totalCount\n      pageInfo {\n        hasNextPage\n      }\n      nodes {\n        id\n        rating\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"sku\": \"MOS-KIT-0006\"\n}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "Three products in the seed have nothing written about them. An empty connection is still a connection: `totalCount` is zero, `nodes` is an empty array, `pageInfo` answers, and there is no error anywhere in the response.\n\nThis request is a regression test rather than a demonstration. Batched connection resolvers fail on the empty case by leaving the key out of the result altogether, which is not an error the server ever reports and not something a count assertion can catch. Asserting that `nodes` exists and is an array is what catches it.\n\nThe id goes into a collection variable, because a product nobody has reviewed is exactly what the mutations below need."
+      },
+      "response": []
+    },
+    {
+      "name": "A deprecated field still answers",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "pm.test(\"the deprecated field still returns the whole catalog\", function () {",
+              "    pm.expect(body.data.products).to.be.an(\"array\");",
+              "    pm.expect(body.data.products).to.have.lengthOf(25);",
+              "});",
+              "",
+              "pm.test(\"and returns the same catalog the replacement does\", function () {",
+              "    const deprecated = body.data.products.map(function (p) { return p.sku; }).sort();",
+              "    const replacement = body.data.browseProducts.nodes.map(function (p) { return p.sku; }).sort();",
+              "    pm.expect(body.data.browseProducts.totalCount).to.eql(25);",
+              "    pm.expect(deprecated).to.eql(replacement);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  products {\n    sku\n  }\n  browseProducts(first: 25) {\n    totalCount\n    nodes {\n      sku\n    }\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "A deprecation is a note to the people writing queries, not a switch that turns the field off. `products` answers exactly as it did in chapter 2, and every client that already ships with it keeps working.\n\nBoth fields go out in one document so the two answers can be compared directly. The day they diverge is the day the deprecation reason is a lie, and nobody migrating off `products` finds that out until their data is wrong."
+      },
+      "response": []
+    },
+    {
+      "name": "The deprecation is visible",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const listed = body.data.all.fields.find(function (f) { return f.name === \"products\"; });",
+              "",
+              "pm.test(\"products is deprecated, and the reason names its replacement\", function () {",
+              "    pm.expect(listed, \"products is missing even with includeDeprecated\").to.be.an(\"object\");",
+              "    pm.expect(listed.isDeprecated).to.eql(true);",
+              "    pm.expect(listed.deprecationReason).to.be.a(\"string\");",
+              "    pm.expect(listed.deprecationReason).to.include(\"browseProducts\");",
+              "});",
+              "",
+              "// Same selection, same type, one argument apart. This is why a schema diff",
+              "// that forgets includeDeprecated reads a deprecation as a removal.",
+              "pm.test(\"the plain field list leaves it out altogether\", function () {",
+              "    const plain = body.data.current.fields.map(function (f) { return f.name; });",
+              "    pm.expect(plain).to.not.include(\"products\");",
+              "    pm.expect(plain).to.include(\"browseProducts\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  current: __type(name: \"Query\") {\n    fields {\n      name\n    }\n  }\n  all: __type(name: \"Query\") {\n    fields(includeDeprecated: true) {\n      name\n      isDeprecated\n      deprecationReason\n    }\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "Where the deprecation actually lives. Introspection hides deprecated fields unless the caller asks for them, so the same `__type` selection goes out twice: once plain, which does not mention `products` at all, and once with `includeDeprecated: true`, which does and carries the reason with it.\n\nThat default catches people out. A schema diff run without the argument reports the field as removed, and a client generator run without it produces a client that cannot call a field the server still serves.\n\nThe reason itself is worth reading rather than just asserting on. It says what is wrong with the field and what to use instead, which is the whole job of a deprecation reason."
+      },
+      "response": []
+    },
+    {
+      "name": "A rating that cannot be",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "// A rejected input is a result, not an accident, so it never reaches the",
+              "// transport-level errors array.",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const payload = body.data.submitReview;",
+              "",
+              "pm.test(\"nothing was written\", function () {",
+              "    pm.expect(payload.review).to.eql(null);",
+              "    pm.expect(payload.errors).to.be.an(\"array\");",
+              "    pm.expect(payload.errors).to.have.lengthOf(1);",
+              "});",
+              "",
+              "pm.test(\"the error is about the rating, and states the range\", function () {",
+              "    const failure = payload.errors[0];",
+              "    pm.expect(failure.__typename).to.eql(\"RatingOutOfRangeError\");",
+              "    pm.expect(failure.code).to.eql(\"RATING_OUT_OF_RANGE\");",
+              "    pm.expect(failure.message).to.eql(\"A rating has to be between 1 and 5. Got 9.\");",
+              "    pm.expect(failure.min).to.eql(1);",
+              "    pm.expect(failure.max).to.eql(5);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "mutation SubmitReview($input: SubmitReviewInput!) {\n  submitReview(input: $input) {\n    review {\n      id\n      rating\n    }\n    errors {\n      __typename\n      ... on Error {\n        message\n        code\n      }\n      ... on RatingOutOfRangeError {\n        min\n        max\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"input\": {\n    \"productId\": \"{{unreviewedProductId}}\",\n    \"customerId\": \"{{reviewerId}}\",\n    \"rating\": 9,\n    \"body\": \"Nine out of five.\"\n  }\n}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "Nine, on a five point scale. The answer is 200 with a payload error rather than a transport error, because the schema treats a bad rating as something the client should render, not something that went wrong.\n\n`RatingOutOfRangeError` is the member of the union that carries extra fields, and the fragment picks them up. Handing back `min` and `max` rather than only a sentence is what lets a form put the bounds on the input without hard-coding them.\n\nThis runs before the successful submission on purpose. At this point the customer has not reviewed this product, so the rating is the only thing wrong with the request and the error that comes back can only be about the rating. Nothing is written, so the counts above stay true."
+      },
+      "response": []
+    },
+    {
+      "name": "A review, submitted",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(body).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const payload = body.data.submitReview;",
+              "",
+              "pm.test(\"the payload carries no errors\", function () {",
+              "    pm.expect(payload.errors).to.eql(null);",
+              "});",
+              "",
+              "pm.test(\"the review came back holding what was sent\", function () {",
+              "    pm.expect(payload.review, \"nothing was written\").to.be.an(\"object\");",
+              "    pm.expect(payload.review.rating).to.eql(4);",
+              "    pm.expect(payload.review.body).to.eql(\"The kettle boils quickly and the enamel has not chipped.\");",
+              "    pm.expect(payload.review.author.id).to.eql(pm.collectionVariables.get(\"reviewerId\"));",
+              "});",
+              "",
+              "pm.test(\"the new row answers to a Review node id\", function () {",
+              "    const raw = Buffer.from(payload.review.id, \"base64\");",
+              "    pm.expect(raw.length).to.eql(23);",
+              "    pm.expect(raw.toString(\"utf8\", 0, 7)).to.eql(\"Review:\");",
+              "    let blank = true;",
+              "    for (let i = 7; i < raw.length; i++) {",
+              "        if (raw[i] !== 0) { blank = false; break; }",
+              "    }",
+              "    pm.expect(blank, \"the review id carries an all-zero key\").to.eql(false);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "mutation SubmitReview($input: SubmitReviewInput!) {\n  submitReview(input: $input) {\n    review {\n      id\n      rating\n      body\n      createdAt\n      author {\n        id\n        displayName\n      }\n    }\n    errors {\n      __typename\n      ... on Error {\n        message\n        code\n      }\n      ... on RatingOutOfRangeError {\n        min\n        max\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"input\": {\n    \"productId\": \"{{unreviewedProductId}}\",\n    \"customerId\": \"{{reviewerId}}\",\n    \"rating\": 4,\n    \"body\": \"The kettle boils quickly and the enamel has not chipped.\"\n  }\n}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The first request in the collection that writes anything, which is why every assertion about a seeded count sits above it and not below.\n\n`errors` is a union, so `message` cannot be selected on it directly. The fragment on the `Error` interface is what makes one selection cover every member of the union, and the fragment on `RatingOutOfRangeError` reaches the two fields only that member has. Every error selection here is written the same way, whether or not the request expects to fail.\n\nBoth ids come from earlier requests: the product is one of the three nobody had reviewed, the customer is an author lifted out of a page of reviews. That is the cheapest way to be certain both exist, now that neither can be typed by hand."
+      },
+      "response": []
+    },
+    {
+      "name": "The same review twice",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test(\"no GraphQL errors\", function () {",
+              "    pm.expect(pm.response.json()).to.not.have.property(\"errors\");",
+              "});",
+              "",
+              "const payload = pm.response.json().data.submitReview;",
+              "",
+              "pm.test(\"the second one was not written\", function () {",
+              "    pm.expect(payload.review).to.eql(null);",
+              "    pm.expect(payload.errors).to.be.an(\"array\");",
+              "    pm.expect(payload.errors).to.have.lengthOf(1);",
+              "});",
+              "",
+              "pm.test(\"the error is the duplicate, and says so in both registers\", function () {",
+              "    const failure = payload.errors[0];",
+              "    pm.expect(failure.__typename).to.eql(\"DuplicateReviewError\");",
+              "    pm.expect(failure.code).to.eql(\"DUPLICATE_REVIEW\");",
+              "    pm.expect(failure.message).to.eql(\"You have already reviewed this product.\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "mutation SubmitReview($input: SubmitReviewInput!) {\n  submitReview(input: $input) {\n    review {\n      id\n      rating\n    }\n    errors {\n      __typename\n      ... on Error {\n        message\n        code\n      }\n      ... on RatingOutOfRangeError {\n        min\n        max\n      }\n    }\n  }\n}",
+            "variables": "{\n  \"input\": {\n    \"productId\": \"{{unreviewedProductId}}\",\n    \"customerId\": \"{{reviewerId}}\",\n    \"rating\": 4,\n    \"body\": \"The kettle boils quickly and the enamel has not chipped.\"\n  }\n}"
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/graphql",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        },
+        "description": "The same request again, unchanged. One customer, one review per product, so the second attempt is refused, and the refusal arrives the same way the bad rating did: 200, `review` null, one member of the error union.\n\nTwo audiences, two fields. `message` is for a person, `code` is for the client's switch statement, and the client is meant to branch on `__typename` or `code` rather than on the wording of the sentence.\n\nThis request is also the one that tells you the database was not reset before the run: point the collection at a database that already holds this review and the submission above fails instead of this one."
       },
       "response": []
     }

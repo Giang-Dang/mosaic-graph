@@ -14,12 +14,32 @@ public static partial class CatalogQueries
 {
     /// <summary>Every product Mosaic sells.</summary>
     /// <remarks>
+    /// <para>
     /// Twenty-five rows, unpaged and unfiltered, and left exactly as chapters 2
     /// and 3 found it. Every number those chapters print is a measurement of
     /// this field, so paginating it would quietly retire two chapters of
     /// evidence. <see cref="GetBrowseProductsAsync"/> is where the data
     /// middleware lives instead.
+    /// </para>
+    /// <para>
+    /// Deprecated in chapter 5, which is the whole of what deprecation costs:
+    /// one attribute, and the field goes on working exactly as before.
+    /// <c>@deprecated</c> is a message to the humans and the tooling reading
+    /// the schema, not a switch that turns anything off. The field is still
+    /// here, still answers, and still has every number chapters 2 to 4 measured
+    /// riding on it. What has changed is that a client generating code from
+    /// this schema now gets a warning, and that the day it is removed is a day
+    /// the schema registry can see coming.
+    /// </para>
+    /// <para>
+    /// The reason string names the replacement, and that is the part worth
+    /// copying. A deprecation that says "use something else" without saying
+    /// what leaves every consumer to work it out separately.
+    /// </para>
     /// </remarks>
+    [GraphQLDeprecated(
+        "Returns the whole catalog with no upper bound on its size. "
+        + "Use `browseProducts`, which pages, filters and sorts.")]
     public static Task<IReadOnlyList<Product>> GetProductsAsync(
         CatalogService catalog,
         CancellationToken cancellationToken)

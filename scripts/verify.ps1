@@ -17,6 +17,11 @@
     script brings the container up itself. Everything else it needs is the .NET
     SDK pinned in global.json.
 
+    Since chapter 5 the run starts by dropping Mosaic's schema and reseeding it.
+    The Postman collection submits a review, so a run leaves the database
+    changed, and a gate whose result depends on how many times it has been run
+    is not a gate. Do not point this at a database holding anything you want.
+
     Nothing here is clever on purpose. A reader who has never written a line of
     PowerShell should be able to read it top to bottom and see what is checked.
 
@@ -83,7 +88,13 @@ $SampleApproaches = [ordered] @{
 # author, 1 + 25 + 120 = 146. Chapter 4's DataLoaders make it 3. The resolver
 # count stays at 146, because the engine still runs every one of those
 # resolvers; what changed is what a resolver does when it gets there.
-$VerifyQuery          = '{ products { title reviews { rating author { displayName } } } }'
+#
+# Chapter 5 turned Product.reviews into a connection, so the query now carries a
+# page size where it carried nothing. first: 12 is not arbitrary: the most
+# reviewed product has exactly 12, so this still asks for every review in the
+# seed data and the total below is still 120. Anything smaller would be
+# asserting a truncation rather than the catalog.
+$VerifyQuery          = '{ products { title reviews(first: 12) { nodes { rating author { displayName } } } } }'
 $ExpectedProductCount = 25
 $ExpectedReviewCount  = 120
 $ExpectedLookupCount  = 3
@@ -303,6 +314,8 @@ $previousAspNetCoreUrls = $env:ASPNETCORE_URLS
 $aspNetCoreUrlsWasSet = $null -ne $previousAspNetCoreUrls
 $previousAspNetCoreEnvironment = $env:ASPNETCORE_ENVIRONMENT
 $aspNetCoreEnvironmentWasSet = $null -ne $previousAspNetCoreEnvironment
+$previousResetDatabase = $env:MOSAIC_RESET_DATABASE
+$resetDatabaseWasSet = $null -ne $previousResetDatabase
 $exitCode = 0
 
 Write-Host "mosaic verify - $RepoRoot"
@@ -502,6 +515,14 @@ try {
     # would fail with HC0046. Say Development explicitly rather than relying on
     # a profile this script deliberately does not load.
     $env:ASPNETCORE_ENVIRONMENT = 'Development'
+
+    # Chapter 5 gave Mosaic a mutation, and the Postman collection uses it. A
+    # verification run therefore leaves a review behind, and the next run would
+    # start with 121 of them and fail the seeded-count assertion above. So each
+    # run starts from a dropped and reseeded schema. That costs a second or two
+    # and buys a gate whose result does not depend on how many times it has been
+    # run before, which is the only kind worth having.
+    $env:MOSAIC_RESET_DATABASE = '1'
     $apiProcess = Start-Process `
         -FilePath 'dotnet' `
         -ArgumentList @('run', '--project', $ApiProject, '-c', 'Release', '--no-build', '--no-launch-profile') `
@@ -582,9 +603,12 @@ try {
         Stop-Verify 'product count' "Expected $ExpectedProductCount products, got $($products.Count)."
     }
 
+    # .reviews.nodes since chapter 5, not .reviews: the field is a connection
+    # and the rows live under nodes. Reading .reviews here would count 25 ones
+    # instead of 120 reviews and the assertion below would say so.
     $reviewCount = 0
     foreach ($product in $products) {
-        $reviewCount += @($product.reviews).Count
+        $reviewCount += @($product.reviews.nodes).Count
     }
 
     if ($reviewCount -ne $ExpectedReviewCount) {
@@ -863,13 +887,22 @@ try {
         Remove-Item Env:ASPNETCORE_ENVIRONMENT -ErrorAction SilentlyContinue
     }
 
+    if ($resetDatabaseWasSet) {
+        $env:MOSAIC_RESET_DATABASE = $previousResetDatabase
+    } else {
+        Remove-Item Env:MOSAIC_RESET_DATABASE -ErrorAction SilentlyContinue
+    }
+
     if ($tempDir -and (Test-Path -LiteralPath $tempDir)) {
         Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # The container is stopped, not removed, and its volume is left alone. A
-    # verification run should not be able to destroy data, and re-seeding an
-    # empty database costs a second anyway.
+    # The container is stopped, not removed, and its volume is left in place.
+    # Not that the data in it survived: since chapter 5 this script starts the
+    # service with MOSAIC_RESET_DATABASE set, so the run began by dropping the
+    # schema. Keeping the volume only saves the container from initialising
+    # itself again. Do not point this script at a database holding anything you
+    # want to keep.
     if ($startedDatabase -and -not $KeepDatabase) {
         & docker compose --project-directory $RepoRoot stop mosaic-db *> $null
     }

@@ -3,6 +3,7 @@ using Mosaic.Api.Catalog;
 using Mosaic.Api.Infrastructure;
 using Mosaic.Api.Infrastructure.Data;
 using Mosaic.Api.Infrastructure.Diagnostics;
+using Mosaic.Api.Infrastructure.Errors;
 using Mosaic.Api.Inventory;
 using Mosaic.Api.Ordering;
 using Mosaic.Api.Pricing;
@@ -52,6 +53,23 @@ builder.AddGraphQL()
     // first / after / last / before, and the PagingArguments parameter that
     // hands them to a resolver.
     .AddPagingArguments()
+    // The Node interface and the node / nodes root fields. At least one type
+    // has to implement Node or the schema fails to build; four do, each
+    // through a [NodeResolver] method in its own domain folder.
+    .AddGlobalObjectIdentification()
+    // One input argument and one payload type per mutation, generated.
+    // applyToAllMutations: true is the choice that matters - the alternative
+    // is a per-mutation attribute, and a convention nobody can opt out of
+    // silently is worth more than one that is applied by hand.
+    .AddMutationConventions(applyToAllMutations: true)
+    // Replaces the built-in `Error` interface, which carries only a message,
+    // with Mosaic's, which also carries a code. Every type on a payload's
+    // error union has to satisfy it.
+    .AddErrorInterfaceType<IMosaicError>()
+    // Subscriptions, delivered through an in-process pub/sub. Nothing outside
+    // this process can publish to it and nothing outside this process can hear
+    // it, which is exactly as far as a single service goes.
+    .AddInMemorySubscriptions()
     // A diagnostic listener is built from the schema service provider, which
     // does not inherit the application's registrations. Drop the next line and
     // startup fails with "Unable to resolve service for type
@@ -69,6 +87,11 @@ builder.Services.AddPipelineReport();
 var app = builder.Build();
 
 app.UseServiceCallCounting();
+
+// Subscriptions need a connection that stays open. Server-sent events work
+// through MapGraphQL with nothing added; graphql-ws needs this line, and
+// leaving it out fails at the handshake rather than at start-up.
+app.UseWebSockets();
 
 app.MapGet("/health", () => Results.Ok("healthy"));
 app.MapGraphQL();

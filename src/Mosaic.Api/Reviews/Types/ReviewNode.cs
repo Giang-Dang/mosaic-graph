@@ -1,5 +1,7 @@
+using HotChocolate.Types.Relay;
 using Mosaic.Api.Accounts.Data;
 using Mosaic.Api.Accounts.Model;
+using Mosaic.Api.Reviews.Data;
 using Mosaic.Api.Reviews.Model;
 
 namespace Mosaic.Api.Reviews.Types;
@@ -13,6 +15,20 @@ public static partial class ReviewNode
     /// <summary>The review's global identifier.</summary>
     [ID]
     public static Guid GetId([Parent] Review review) => review.Id;
+
+    /// <summary>Fetches one review from its global identifier.</summary>
+    /// <remarks>
+    /// A review is worth refetching on its own account. A client that has just
+    /// submitted one, or that is showing a permalink to it, holds an identifier
+    /// and nothing else. That was not possible before chapter 5: the only route
+    /// to a review was through the product it was written about.
+    /// </remarks>
+    [NodeResolver]
+    public static async Task<Review?> ResolveReviewAsync(
+        Guid id,
+        IReviewByIdDataLoader reviewById,
+        CancellationToken cancellationToken)
+        => await reviewById.LoadAsync(id, cancellationToken);
 
     /// <summary>The customer who wrote the review.</summary>
     /// <remarks>

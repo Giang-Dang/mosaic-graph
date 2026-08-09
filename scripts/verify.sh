@@ -12,6 +12,11 @@
 # script brings the container up itself. Set MOSAIC_KEEP_DATABASE=1 to leave it
 # running afterwards, which is worth doing while iterating.
 #
+# Since chapter 5 the run starts by dropping Mosaic's schema and reseeding it.
+# The Postman collection submits a review, so a run leaves the database changed,
+# and a gate whose result depends on how many times it has been run is not a
+# gate. Do not point this at a database holding anything you want.
+#
 # scripts/verify.ps1 is the same script for readers on Windows. Changes to one
 # belong in the other.
 #
@@ -54,7 +59,13 @@ schema-first:Mosaic.Sample.SchemaFirst"
 # author, 1 + 25 + 120 = 146. Chapter 4's DataLoaders make it 3. The resolver
 # count stays at 146, because the engine still runs every one of those
 # resolvers; what changed is what a resolver does when it gets there.
-VERIFY_QUERY='{ products { title reviews { rating author { displayName } } } }'
+#
+# Chapter 5 turned Product.reviews into a connection, so the query now carries a
+# page size where it carried nothing. first: 12 is not arbitrary: the most
+# reviewed product has exactly 12, so this still asks for every review in the
+# seed data and the total below is still 120. Anything smaller would be
+# asserting a truncation rather than the catalog.
+VERIFY_QUERY='{ products { title reviews(first: 12) { nodes { rating author { displayName } } } } }'
 EXPECTED_PRODUCT_COUNT=25
 EXPECTED_REVIEW_COUNT=120
 EXPECTED_LOOKUP_COUNT=3
@@ -188,7 +199,7 @@ summarise_response() {
         jq -r '[
             (if has("errors") then 1 else 0 end),
             ((.data.products // []) | length),
-            ([ (.data.products // [])[] | (.reviews // []) | length ] | add // 0)
+            ([ (.data.products // [])[] | (.reviews.nodes // []) | length ] | add // 0)
         ] | @tsv' "$1"
         return $?
     fi
@@ -201,7 +212,8 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
 
 data = payload.get("data") or {}
 products = data.get("products") or []
-reviews = sum(len(product.get("reviews") or []) for product in products)
+reviews = sum(
+    len((product.get("reviews") or {}).get("nodes") or []) for product in products)
 
 print("%d\t%d\t%d" % (1 if "errors" in payload else 0, len(products), reviews))
 PY
@@ -271,9 +283,11 @@ cleanup() {
         rm -rf "$TEMP_DIR"
     fi
 
-    # The container is stopped, not removed, and its volume is left alone. A
-    # verification run should not be able to destroy data, and re-seeding an
-    # empty database costs a second anyway.
+    # The container is stopped, not removed, and its volume is left in place.
+    # Not that the data in it survived: since chapter 5 this script starts the
+    # service with MOSAIC_RESET_DATABASE set, so the run began by dropping the
+    # schema. Keeping the volume only saves the container from initialising
+    # itself again.
     if [ "$STARTED_DATABASE" -eq 1 ] && [ "$KEEP_DATABASE" != "1" ]; then
         docker compose --project-directory "$REPO_ROOT" stop mosaic-db >/dev/null 2>&1 || true
     fi
@@ -477,7 +491,12 @@ fi
 # launchSettings.json is ignored, and without it ASP.NET Core defaults to
 # Production. HotChocolate 16 answers introspection only in Development, so the
 # Postman collection's introspection request would fail with HC0046.
-ASPNETCORE_URLS="$BASE_URL" ASPNETCORE_ENVIRONMENT=Development dotnet run \
+#
+# MOSAIC_RESET_DATABASE drops the schema and reseeds it before the service takes
+# a request. The Postman collection submits a review, so without this the second
+# run of this script would find 121 of them and fail an assertion that is not
+# wrong.
+ASPNETCORE_URLS="$BASE_URL" ASPNETCORE_ENVIRONMENT=Development MOSAIC_RESET_DATABASE=1 dotnet run \
     --project "$API_PROJECT" -c Release --no-build --no-launch-profile \
     > "$API_LOG" 2>&1 &
 API_PID=$!

@@ -21,6 +21,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | `ch03` | 3. The Life of a Request | The same service, instrumented: pipeline report, per-request timeline, resolver-scope sample |
 | `ch04-ef` | 4. Data Without the N+1, halfway | The same schema on PostgreSQL through EF Core. Still 146 lookups, and now 146 round trips |
 | `ch04` | 4. Data Without the N+1 | DataLoaders behind the same resolvers: 146 resolvers, 3 round trips. Plus `browseProducts`, paged, filtered, sorted and projected |
+| `ch05` | 5. Schema Design That Survives Change | The `Node` interface and real global identifiers, `Product.reviews` as a connection, Mosaic's first mutation with typed errors, a subscription, and `products` deprecated |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -56,13 +57,30 @@ built-in IDE. Try:
 
 ```graphql
 {
-  products {
-    title
-    price { amount currency }
-    availableQuantity
-    averageRating
+  browseProducts(first: 5) {
+    nodes {
+      title
+      price { amount currency }
+      availableQuantity
+      averageRating
+      reviews(first: 3) {
+        totalCount
+        nodes { rating author { displayName } }
+      }
+    }
   }
 }
+```
+
+`products` still answers and is deprecated since chapter 5; `browseProducts` is
+what replaced it. That chapter is about which changes a client can survive and
+which it cannot, and Mosaic carries one of each.
+
+Since chapter 5 there is also a `Mutation` and a `Subscription`. Open two Nitro
+tabs, subscribe in one and write in the other:
+
+```graphql
+subscription { onReviewAdded(productId: "<a product id>") { rating body } }
 ```
 
 Or in a container, which publishes the same port so every URL above still works:
@@ -87,9 +105,15 @@ byte-identical SDL, starts the service, asserts the seeded catalog answers with
 thirteen middleware in order, checks the lookup, resolver and SQL command counts
 the book quotes, and runs the Postman collection.
 
-It stops the database container on the way out and leaves its volume alone. Pass
-`-KeepDatabase` (or set `MOSAIC_KEEP_DATABASE=1`) to leave it running, which is
-worth doing while iterating: starting PostgreSQL is the slowest step.
+Since chapter 5 the run starts by dropping Mosaic's schema and reseeding it. The
+collection submits a review, so a run leaves the database changed, and a gate
+whose result depends on how many times it has been run is not a gate. The switch
+is `MOSAIC_RESET_DATABASE=1`, which the scripts set for you. Do not point them at
+a database holding anything you want to keep.
+
+It stops the database container on the way out and leaves its volume in place.
+Pass `-KeepDatabase` (or set `MOSAIC_KEEP_DATABASE=1`) to leave it running, which
+is worth doing while iterating: starting PostgreSQL is the slowest step.
 
 The Postman collection needs newman, which is pinned as a local dev dependency:
 
@@ -112,6 +136,7 @@ src/Mosaic.Api/          the service; one folder per domain
   Infrastructure/        the lookup counter
     Data/                the DbContext, the seeder and the SQL command counter
     Diagnostics/         the pipeline report and the per-request timeline
+    Errors/              the Error interface every domain error implements
 samples/three-approaches/  the same tiny schema, three authoring styles
 samples/resolver-scopes/   what [UseRequestScope] changes, in two fields
 schema/                  committed SDL snapshots
@@ -157,6 +182,17 @@ three statements: the products, their reviews, and the twelve distinct customers
 who wrote those reviews. Only the batch fetches count as lookups, so the two
 numbers that used to agree no longer do, and the gap between them is the
 chapter.
+
+At tag `ch05` the query has to be written differently, because `reviews` is a
+connection now:
+
+```graphql
+{ products { title reviews(first: 12) { nodes { rating author { displayName } } } } }
+```
+
+It still reports 146 resolvers and 3 SQL. The field changed shape, the batching
+did not, and the second statement is now a window function that returns only the
+first `n` reviews of each product rather than all of them.
 
 ## Watching a request go through
 
