@@ -1,0 +1,473 @@
+{
+	"info": {
+		"_postman_id": "5e2b8c14-7a63-4d9f-b0e5-1c8a4f27d306",
+		"name": "Mosaic router - chapter 10",
+		"description": "Mosaic through the Cosmo Router, as chapter 10 of Federated GraphQL on .NET uses it.\n\nEvery request here goes to the router and to nothing else. The subgraph collection, postman/mosaic-federation.postman_collection.json, is the other half: it asks each service for what it owns. This one asks the graph.\n\nStart the two subgraphs and the router before running it:\n\n    docker compose up -d mosaic-db\n    dotnet run --project src/Mosaic.Catalog\n    dotnet run --project src/Mosaic.Api\n    docker compose up -d mosaic-router\n\nNothing here writes, so the collection can be run twice against the same processes.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "The query that stopped working",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"no errors\", function () {",
+							"    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+							"});",
+							"",
+							"const nodes = body.data.browseProducts.nodes;",
+							"",
+							"pm.test(\"three products\", function () {",
+							"    pm.expect(nodes).to.have.lengthOf(3);",
+							"});",
+							"",
+							"// The point of the whole chapter: one answer, assembled out of two",
+							"// services. title and the identifier are Catalog's; price,",
+							"// availableQuantity, averageRating and reviews are Mosaic's. Since",
+							"// chapter 8 no single service could answer this.",
+							"pm.test(\"every product carries fields from both subgraphs\", function () {",
+							"    for (const node of nodes) {",
+							"        pm.expect(node.title, \"title\").to.be.a(\"string\").and.not.empty;",
+							"        pm.expect(node.price.amount, \"price.amount\").to.be.a(\"number\");",
+							"        pm.expect(node.price.currency, \"price.currency\").to.eql(\"EUR\");",
+							"        pm.expect(node.availableQuantity, \"availableQuantity\").to.be.a(\"number\");",
+							"        pm.expect(node.reviews.totalCount, \"reviews.totalCount\").to.be.a(\"number\");",
+							"    }",
+							"});",
+							"",
+							"pm.test(\"the reviews carry their authors, three services deep\", function () {",
+							"    const withReviews = nodes.filter((n) => n.reviews.nodes.length > 0);",
+							"    pm.expect(withReviews.length, \"at least one product has reviews\").to.be.above(0);",
+							"    for (const node of withReviews) {",
+							"        for (const review of node.reviews.nodes) {",
+							"            pm.expect(review.rating).to.be.within(1, 5);",
+							"            pm.expect(review.author.displayName).to.be.a(\"string\").and.not.empty;",
+							"        }",
+							"    }",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  browseProducts(first: 3) {\n    nodes {\n      title\n      price { amount currency }\n      availableQuantity\n      averageRating\n      reviews(first: 2) { totalCount nodes { rating author { displayName } } }\n    }\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{routerUrl}}/graphql",
+					"host": [
+						"{{routerUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "The storefront query chapters 2 to 5 opened with. Chapter 8 split the graph and left it unanswerable by either service: Catalog has the titles and cannot price them, Mosaic has the prices and cannot list the products. This is the first request in the book that gets an answer to it."
+			},
+			"response": []
+		},
+		{
+			"name": "The plan behind it",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const plan = pm.response.json().extensions.queryPlan;",
+							"",
+							"pm.test(\"two fetches, in sequence\", function () {",
+							"    pm.expect(plan.kind).to.eql(\"Sequence\");",
+							"    pm.expect(plan.children).to.have.lengthOf(2);",
+							"});",
+							"",
+							"const first = plan.children[0].fetch;",
+							"const second = plan.children[1].fetch;",
+							"",
+							"pm.test(\"catalog first, on its own\", function () {",
+							"    pm.expect(first.subgraphName).to.eql(\"catalog\");",
+							"    pm.expect(first.kind).to.eql(\"Single\");",
+							"});",
+							"",
+							"pm.test(\"then mosaic, in one batched entity call\", function () {",
+							"    pm.expect(second.subgraphName).to.eql(\"mosaic\");",
+							"    pm.expect(second.kind).to.eql(\"BatchEntity\");",
+							"    pm.expect(second.dependsOnFetchIds).to.eql([first.fetchId]);",
+							"});",
+							"",
+							"// A connection puts the entities one level below the root field, and",
+							"// the path is how the router knows where to put the answers back.",
+							"pm.test(\"the entities live under browseProducts.nodes\", function () {",
+							"    pm.expect(second.path).to.eql(\"browseProducts.nodes\");",
+							"});",
+							"",
+							"// Four fields crossed the boundary and there is still one fetch,",
+							"// because all four hang off the same key.",
+							"pm.test(\"four fields, one key, one round trip\", function () {",
+							"    const asked = second.dependencies.map((d) => d.coordinate.fieldName).sort();",
+							"    pm.expect(asked).to.eql([\"availableQuantity\", \"averageRating\", \"price\", \"reviews\"]);",
+							"    for (const dependency of second.dependencies) {",
+							"        pm.expect(dependency.isUserRequested).to.be.true;",
+							"        pm.expect(dependency.dependsOn).to.have.lengthOf(1);",
+							"        pm.expect(dependency.dependsOn[0].subgraph).to.eql(\"catalog\");",
+							"        pm.expect(dependency.dependsOn[0].coordinate.fieldName).to.eql(\"id\");",
+							"        pm.expect(dependency.dependsOn[0].isKey).to.be.true;",
+							"    }",
+							"});",
+							"",
+							"// Kept for the next request, which sends the same document with",
+							"// different numbers in it.",
+							"pm.collectionVariables.set(\"storefrontPlan\", JSON.stringify(plan));"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-WG-Include-Query-Plan",
+						"value": "true"
+					},
+					{
+						"key": "X-WG-Skip-Loader",
+						"value": "true"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  browseProducts(first: 3) {\n    nodes {\n      title\n      price { amount currency }\n      availableQuantity\n      averageRating\n      reviews(first: 2) { totalCount nodes { rating author { displayName } } }\n    }\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{routerUrl}}/graphql",
+					"host": [
+						"{{routerUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "The same query with the two query-plan headers on it. Skip-Loader means no subgraph is called, so reading a plan costs nothing. Both headers need dev_mode on the router, which router/config.yaml sets."
+			},
+			"response": []
+		},
+		{
+			"name": "The same plan, different numbers",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"const plan = pm.response.json().extensions.queryPlan;",
+							"const previous = JSON.parse(pm.collectionVariables.get(\"storefrontPlan\"));",
+							"",
+							"// The document sent here differs from the previous request only in the",
+							"// two numbers. If the planner kept them, the two plans would differ.",
+							"pm.test(\"the literals became variables\", function () {",
+							"    pm.expect(plan.normalizedQuery).to.include(\"$a\");",
+							"    pm.expect(plan.normalizedQuery).to.include(\"$b\");",
+							"    pm.expect(plan.normalizedQuery).to.not.include(\"first: 7\");",
+							"});",
+							"",
+							"pm.test(\"first: 7 and first: 3 produce the same plan\", function () {",
+							"    pm.expect(JSON.stringify(plan)).to.eql(JSON.stringify(previous));",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-WG-Include-Query-Plan",
+						"value": "true"
+					},
+					{
+						"key": "X-WG-Skip-Loader",
+						"value": "true"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  browseProducts(first: 7) {\n    nodes {\n      title\n      price { amount currency }\n      availableQuantity\n      averageRating\n      reviews(first: 4) { totalCount nodes { rating author { displayName } } }\n    }\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{routerUrl}}/graphql",
+					"host": [
+						"{{routerUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "The previous document with 3 and 2 replaced by 7 and 4. The router lifts literal arguments out into variables while it normalises, so both documents plan to the same thing."
+			},
+			"response": []
+		},
+		{
+			"name": "What the router will not answer",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"const body = pm.response.json();",
+							"const errors = body.errors || [];",
+							"",
+							"// A GraphQL error, not a transport one. HotChocolate answers 400 for",
+							"// the same class of document; the router answers 200 with errors in",
+							"// the body.",
+							"pm.test(\"responds 200 with an error in the body\", function () {",
+							"    pm.response.to.have.status(200);",
+							"    pm.expect(body.data).to.be.oneOf([null, undefined]);",
+							"});",
+							"",
+							"// The federation entry points belong to the subgraphs. The router",
+							"// serves the client schema and none of these three fields is in it.",
+							"pm.test(\"_service is not a field of the graph\", function () {",
+							"    pm.expect(errors[0].message).to.include('Cannot query field \"_service\" on type \"Query\"');",
+							"});",
+							"",
+							"// Three unknown fields, one error. Send the same document to a",
+							"// subgraph and HotChocolate names all of the ones it does not have.",
+							"pm.test(\"and the router stops at the first one\", function () {",
+							"    pm.expect(errors).to.have.lengthOf(1);",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  _service { sdl }\n  _entities(representations: []) { __typename }\n  node(id: \"x\") { id }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{routerUrl}}/graphql",
+					"host": [
+						"{{routerUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "Three fields that exist on a subgraph and not on the graph. Chapter 8's subgraph collection sends the first two to 5100 and 5101 and gets answers."
+			},
+			"response": []
+		},
+		{
+			"name": "The root field chapter 8 gave up",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"const errors = pm.response.json().errors || [];",
+							"",
+							"// Both subgraphs pass registerNodeInterface: false, because two",
+							"// subgraphs declaring Query.node is a composition error and",
+							"// @shareable would be a lie. The interface survived and the root",
+							"// field did not, which is only visible from out here.",
+							"pm.test(\"node is gone from the graph\", function () {",
+							"    pm.expect(errors[0].message).to.include('Cannot query field \"node\" on type \"Query\"');",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  node(id: \"UHJvZHVjdDoAAACgAAAAQIAAAAAAAAAB\") {\n    id\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{routerUrl}}/graphql",
+					"host": [
+						"{{routerUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "A real global identifier, handed back to the field that is supposed to take one. Chapter 5 built that field, chapter 8 removed it from both subgraphs to make them compose, and chapter 13 is where a federated graph gets it back."
+			},
+			"response": []
+		},
+		{
+			"name": "The graph the router advertises",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"// Not `data`: the Postman sandbox already has one.",
+							"const graph = pm.response.json().data;",
+							"",
+							"pm.test(\"Product carries all nine fields, from both services\", function () {",
+							"    const fields = graph.product.fields.map((f) => f.name);",
+							"    pm.expect(fields).to.have.members([",
+							"        \"id\", \"sku\", \"title\", \"description\", \"category\",",
+							"        \"availableQuantity\", \"price\", \"reviews\", \"averageRating\",",
+							"    ]);",
+							"});",
+							"",
+							"pm.test(\"and still implements Node\", function () {",
+							"    pm.expect(graph.product.interfaces.map((i) => i.name)).to.eql([\"Node\"]);",
+							"});",
+							"",
+							"// Chapter 5 deprecated products in favour of browseProducts. It",
+							"// survived composition, and introspection hides it unless asked.",
+							"pm.test(\"the deprecated root field is hidden by default\", function () {",
+							"    const shown = graph.visible.fields.map((f) => f.name);",
+							"    const all = graph.everything.fields.map((f) => f.name);",
+							"    pm.expect(shown).to.not.include(\"products\");",
+							"    pm.expect(all).to.include(\"products\");",
+							"});",
+							"",
+							"// Neither subgraph declares this and no client can send one. It is",
+							"// in the graph because HotChocolate imports FieldSet as a named type",
+							"// in its @link, and the composer keeps imported named types.",
+							"pm.test(\"the FieldSet scalar nobody wrote is visible here\", function () {",
+							"    pm.expect(graph.__schema.types.map((t) => t.name)).to.include(\"FieldSet\");",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  product: __type(name: \"Product\") {\n    fields { name }\n    interfaces { name }\n  }\n  visible: __type(name: \"Query\") {\n    fields { name }\n  }\n  everything: __type(name: \"Query\") {\n    fields(includeDeprecated: true) { name isDeprecated }\n  }\n  __schema { types { name } }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{routerUrl}}/graphql",
+					"host": [
+						"{{routerUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "What a client sees when it introspects the router: one Product with nine fields and nothing saying which service answers for which of them."
+			},
+			"response": []
+		},
+		{
+			"name": "Readiness",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"the router reports ready\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"// Ready, with both subgraphs stopped, would still be 200: the router",
+							"// is reporting on itself. Chapter 24 is where that matters.",
+							"pm.test(\"and says so in one word\", function () {",
+							"    pm.expect(pm.response.text().trim()).to.eql(\"OK\");",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{routerUrl}}/health/ready",
+					"host": [
+						"{{routerUrl}}"
+					],
+					"path": [
+						"health",
+						"ready"
+					]
+				},
+				"description": "The readiness endpoint, at its default path. There is a /health and a /health/live beside it, and all three are configurable."
+			},
+			"response": []
+		}
+	],
+	"variable": [
+		{
+			"key": "storefrontPlan",
+			"value": ""
+		}
+	]
+}

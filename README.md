@@ -25,6 +25,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | `ch07` | 7. How a Federated Query Actually Runs | Mosaic unchanged. A new sample: two tiny subgraphs and the Cosmo Router, with every request between them logged |
 | `ch08` | 8. The First Cut: Extracting Catalog | Two services. `Mosaic.Catalog` on 5101 owns `Product`; Mosaic on 5100 keeps the other five domains and contributes `price`, `availableQuantity`, `reviews` and `averageRating` to the same type. Both are federation subgraphs |
 | `ch09` | 9. Composition | Neither service changes by a line. The composed router execution config is committed at `federation/supergraph.json`, and `scripts/composition-cases.mjs` produces five composition errors on purpose, each one the real pair of schemas with a single edit applied |
+| `ch10` | 10. Enter the Router | Neither service changes by a line again. The Cosmo Router joins `docker-compose.yml` with a `router/config.yaml` of its own, and the storefront query answers for the first time since chapter 8 |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -84,7 +85,8 @@ what replaced it. Both moved to Catalog whole in chapter 8, along with
 `productById` and `productBySku`. Chapter 5 is about which changes a client can
 survive and which it cannot, and the graph still carries one of each.
 
-What no longer answers anywhere is the query the earlier chapters opened with:
+What neither of them can answer on its own is the query the earlier chapters
+opened with:
 
 ```graphql
 {
@@ -105,8 +107,10 @@ What no longer answers anywhere is the query the earlier chapters opened with:
 
 Catalog has the titles and cannot price them. Mosaic has the prices and cannot
 list the products. Assembling that answer out of two services is a router's job,
-and chapter 10 is where one goes in front of these two. Until then, the way to
-ask a subgraph about a product it did not find is `_entities`, below.
+and since chapter 10 there is one: start it and send the same query to
+<http://localhost:3002/graphql> instead, where it answers. The section below is
+about that. The way to ask one subgraph directly about a product it did not
+find is still `_entities`, further down.
 
 Since chapter 5 there is also a `Mutation` and a `Subscription`, both still
 Mosaic's. Both take a product id, and the id comes from Catalog now: ask
@@ -177,6 +181,54 @@ node scripts/composition-cases.mjs --print missing-key
 The edits are literal string replacements that must match exactly once, so a
 change to a committed schema that removes the text a case edits fails loudly
 instead of quietly composing something nobody meant.
+
+### The router (chapter 10)
+
+The file above is what a router loads. Mosaic's is the Cosmo Router, and it is
+a service in `docker-compose.yml` like the other three:
+
+```
+docker compose up -d mosaic-router      # http://localhost:3002/graphql
+```
+
+It needs no account and no registry, and it does not call a subgraph at
+startup, so it will come up before either service does. Everything it knows
+about Mosaic is in the two files it mounts: `federation/supergraph.json`, and
+`router/config.yaml`, which is the router's own configuration rather than the
+graph's. That file sets five things out of the 66 the router accepts, and each
+one has a comment saying why.
+
+The routing URLs in the composed config say `localhost:5100` and
+`localhost:5101`, which inside a container would be the container. The router
+rewrites them to `host.docker.internal` on its own -
+`localhost_fallback_inside_docker` defaults to true - which keeps one composed
+config working whether the subgraphs were started with `dotnet run` or by
+compose. A deployment would set `overrides.subgraphs.routing_url` instead.
+
+`config.yaml` turns on watching, so recomposing while the router is up swaps
+the graph over without dropping a request:
+
+```
+npx wgc router compose -i federation/mosaic.yaml -o federation/supergraph.json
+```
+
+Query plans are on, because `dev_mode` is on. Ask for one with
+`X-WG-Include-Query-Plan: true`, and add `X-WG-Skip-Loader: true` to get the
+plan without executing it.
+
+Three things about this router are worth reproducing rather than reading, and
+each is a case:
+
+```
+node scripts/router-cases.mjs --list
+node scripts/router-cases.mjs                       # assert all three
+node scripts/router-cases.mjs --print resolvability-off
+```
+
+They need Docker and both subgraphs running. The third is the interesting one:
+a graph composed with `--disable-resolvability-validation` starts without a
+murmur, answers anything that stays inside one subgraph, and returns HTTP 500
+with `internal server error` to anything that crosses.
 
 `Product.id` is the field chapter 5 designed, unchanged: a Relay global
 identifier, base64, carrying the type name beside the key. Since chapter 8 it is
@@ -249,13 +301,21 @@ That collection is chapter 8's, and it is the first one that talks to two
 services: it asks Catalog and Mosaic each for what it owns, and each for the
 same product by key.
 
+Since chapter 10 it also starts Mosaic's own router, runs a third collection
+against it - the storefront query, the plan behind it, and the fields the router
+does not expose - and then runs `scripts/router-cases.mjs`. Pass `-SkipRouter`
+(or set `MOSAIC_SKIP_ROUTER=1`) to leave that out.
+
 Since chapter 7 the run finishes with the federated-wire sample: it composes the
-two subgraph schemas, starts both subgraphs and the router, runs a second
+two subgraph schemas, starts both subgraphs and the router, runs a fourth
 collection against all three, and then checks the subgraph logs for the two
 requests the chapter prints. That last check is the interesting one, because the
 collection reads the router's own account of what it planned and this reads what
 the subgraphs actually received. Pass `-SkipWire` (or set `MOSAIC_SKIP_WIRE=1`)
-to leave it out; it is the slowest section and the only one that pulls an image.
+to leave it out; it is the slowest section.
+
+The two router sections publish the same port and run in sequence, chapter 10's
+first. Neither leaves its container behind.
 
 ## Layout
 
@@ -283,6 +343,10 @@ src/Mosaic.Api/          the other five domains, on 5100
     Federation/          PageCursor again, the same two attributes
 federation/mosaic.yaml   which subgraphs the graph is made of, and where each
                          one answers
+federation/supergraph.json  the composed graph, committed since chapter 9 and
+                         mounted by the router since chapter 10
+router/config.yaml       the router's own configuration, which is about the
+                         process rather than about the graph
 samples/three-approaches/  the same tiny schema, three authoring styles
 samples/resolver-scopes/   what [UseRequestScope] changes, in two fields
 samples/federated-wire/    two subgraphs and a router, so the traffic between
@@ -292,7 +356,9 @@ samples/entity-attribute-placement/
                            [Key] and [ReferenceResolver] may go; chapter 8
 schema/                  committed SDL snapshots, one per service
 postman/                 collections and environments
-scripts/                 verify.ps1 and verify.sh
+scripts/                 verify.ps1 and verify.sh, plus the two case runners
+                         they both call: composition-cases.mjs and
+                         router-cases.mjs
 ```
 
 Each domain's `Data/` folder holds everything that domain knows about storage:

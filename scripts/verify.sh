@@ -32,6 +32,13 @@
 # that has quietly stopped composing is exactly the kind of breakage a gate
 # exists to catch.
 #
+# Since chapter 10 there is a router in front of those two services. This
+# script starts it from docker-compose.yml, runs a third Postman collection
+# against it - the storefront query that no single service can answer, and the
+# plan the router made to answer it - and then runs scripts/router-cases.mjs,
+# which reproduces the three router behaviours chapter 10 calls surprising. Set
+# MOSAIC_SKIP_ROUTER=1 to leave that out.
+#
 # scripts/verify.ps1 is the same script for readers on Windows. Changes to one
 # belong in the other.
 #
@@ -60,8 +67,13 @@ REVIEWS_PORT="${MOSAIC_REVIEWS_PORT:-5202}"
 ROUTER_PORT="${MOSAIC_ROUTER_PORT:-3002}"
 
 # Set MOSAIC_SKIP_WIRE=1 to leave that section out. It is the slowest part of a
-# run and the only part that pulls a container image from a registry.
+# run and one of the two that pull a container image from a registry.
 SKIP_WIRE="${MOSAIC_SKIP_WIRE:-0}"
+
+# Chapter 10's router uses the same port and the same image, and is skipped
+# with MOSAIC_SKIP_ROUTER=1. It starts five containers of its own across the
+# collection and the three router cases.
+SKIP_ROUTER="${MOSAIC_SKIP_ROUTER:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -90,6 +102,17 @@ FEDERATION_GRAPH="$REPO_ROOT/federation/mosaic.yaml"
 # has to notice when a fresh compose stops matching it.
 FEDERATION_SUPERGRAPH="$REPO_ROOT/federation/supergraph.json"
 COMPOSITION_CASES="$REPO_ROOT/scripts/composition-cases.mjs"
+
+# -- chapter 10's router -----------------------------------------------------
+
+# The router runs from docker-compose.yml like any other service and mounts two
+# files: the graph chapter 9 composed, and its own configuration. It publishes
+# the same port as chapter 7's wire-router, which is safe only because the two
+# sections start and stop in sequence.
+ROUTER_CONFIG="$REPO_ROOT/router/config.yaml"
+ROUTER_POSTMAN="$REPO_ROOT/postman/mosaic-router.postman_collection.json"
+ROUTER_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-router.local.postman_environment.json"
+ROUTER_CASES="$REPO_ROOT/scripts/router-cases.mjs"
 
 # The two subgraphs since chapter 8, written as <name>:<port>. Both files under
 # schema/ are what `_service { sdl }` returns, which is what a composer reads,
@@ -234,6 +257,7 @@ STARTED_DATABASE=0
 CATALOG_PID=""
 REVIEWS_PID=""
 STARTED_ROUTER=0
+STARTED_MOSAIC_ROUTER=0
 WGC_BIN=""
 WGC_VIA_NPX=0
 
@@ -640,6 +664,14 @@ cleanup() {
     # script recomposes on every run, and a stopped container keeps it.
     if [ "$STARTED_ROUTER" -eq 1 ]; then
         docker compose --project-directory "$REPO_ROOT" --profile wire down wire-router \
+            >/dev/null 2>&1 || true
+    fi
+
+    # Normally already down: the router section takes its own container away so
+    # that the wire section can have the port. This catches the run that failed
+    # somewhere in between.
+    if [ "$STARTED_MOSAIC_ROUTER" -eq 1 ]; then
+        docker compose --project-directory "$REPO_ROOT" down mosaic-router \
             >/dev/null 2>&1 || true
     fi
 
@@ -1504,6 +1536,103 @@ composer produces. The output above says which case and how it differs. Fix the
 chapter, not the assertion.'
         fi
         step_ok 'the composition errors chapter 9 prints are the ones wgc produces'
+    fi
+
+    # -- 8c. chapter 10: a router in front of the two -----------------------
+
+    # The first section that asks the graph a question rather than asking a
+    # service one. It runs here, after the composed config has been checked
+    # against a fresh compose, because that file is what the router mounts:
+    # verifying the graph the chapter describes means verifying the file the
+    # chapter composed.
+    #
+    # It comes before the federated-wire section on purpose. Both routers
+    # publish 3002 and the two are never meant to be up together, so this one
+    # is taken down again at the end of the block.
+    if [ "$SKIP_ROUTER" = "1" ]; then
+        step_skip 'router' 'MOSAIC_SKIP_ROUTER=1 was set'
+    elif [ ! -f "$ROUTER_CONFIG" ]; then
+        step_skip 'router' 'router/config.yaml does not exist yet'
+    else
+        if port_taken "$ROUTER_PORT"; then
+            step_fail 'start router' "Something is already listening on port $ROUTER_PORT.
+An earlier run may have left one behind: \`docker compose down mosaic-router\`
+clears this one, and \`docker compose --profile wire down\` clears chapter 7's,
+which publishes the same port."
+        fi
+
+        docker compose --project-directory "$REPO_ROOT" up --detach mosaic-router
+        if [ $? -ne 0 ]; then
+            step_fail 'start router' 'docker compose up mosaic-router failed.
+The first run of this pulls the router image.'
+        fi
+        STARTED_MOSAIC_ROUTER=1
+
+        mosaic_router_deadline=$(( $(date +%s) + STARTUP_TIMEOUT_SECONDS ))
+        mosaic_router_up=0
+        while [ "$(date +%s)" -lt "$mosaic_router_deadline" ]; do
+            if curl -fsS -o /dev/null --max-time 5 "$ROUTER_URL/health" 2>/dev/null; then
+                mosaic_router_up=1
+                break
+            fi
+            sleep 0.5
+        done
+
+        if [ "$mosaic_router_up" -ne 1 ]; then
+            step_fail 'start router' "$ROUTER_URL/health did not answer within $STARTUP_TIMEOUT_SECONDS seconds.
+
+$(docker compose --project-directory "$REPO_ROOT" logs --tail 40 mosaic-router 2>&1)"
+        fi
+        step_ok "the router answers on $ROUTER_URL/health"
+
+        # The storefront query, the plan behind it, and what the router does
+        # not expose. Chapter 10 prints all three.
+        if [ ! -f "$ROUTER_POSTMAN" ] || [ ! -f "$ROUTER_POSTMAN_ENV" ]; then
+            step_skip 'router postman' 'the router collection or its environment is missing from postman/'
+        elif [ -z "$NEWMAN_BIN" ]; then
+            step_skip 'router postman' 'newman is not installed - run npm install first'
+        else
+            if [ "$NEWMAN_VIA_NPX" -eq 1 ]; then
+                "$NEWMAN_BIN" --no newman run "$ROUTER_POSTMAN" \
+                    --environment "$ROUTER_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --bail
+            else
+                "$NEWMAN_BIN" run "$ROUTER_POSTMAN" \
+                    --environment "$ROUTER_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --bail
+            fi
+            if [ $? -ne 0 ]; then
+                step_fail 'router postman' 'newman failed; its output above says which request failed.
+The storefront query answering out of two services is chapter 10'"'"'s headline,
+and the query plan assertions are the listing it prints.'
+            fi
+            step_ok 'the router answers the query neither subgraph can'
+        fi
+
+        # And the three things chapter 10 says are surprising, each one a
+        # router started on purpose against a config made for the case. Same
+        # arrangement as chapter 9's composition cases and for the same reason:
+        # one implementation, called by both verify scripts.
+        if [ ! -f "$ROUTER_CASES" ]; then
+            step_skip 'router cases' 'scripts/router-cases.mjs does not exist yet'
+        elif ! command -v node >/dev/null 2>&1; then
+            step_fail 'router cases' 'node is not on PATH; it is needed to run scripts/router-cases.mjs.'
+        else
+            node "$ROUTER_CASES"
+            if [ $? -ne 0 ]; then
+                step_fail 'router cases' 'scripts/router-cases.mjs failed.
+One of the three router behaviours chapter 10 describes has changed. The output
+above says which. Fix the chapter, not the assertion.'
+            fi
+            step_ok 'the router behaves the three ways chapter 10 says it does'
+        fi
+
+        # Down rather than stop, and now rather than in the trap, because the
+        # federated-wire section below wants this port.
+        docker compose --project-directory "$REPO_ROOT" down mosaic-router >/dev/null 2>&1
+        STARTED_MOSAIC_ROUTER=0
     fi
 fi
 

@@ -1,0 +1,52 @@
+# Mosaic's router. Chapter 10.
+#
+# Chapter 9 composed federation/supergraph.json and nothing loaded it. This
+# file is what loads it. The router needs no account, no registry and no
+# network: an execution config on disk is a complete description of the graph,
+# and everything below is about this process rather than about the graph.
+#
+# The schema for this file is published, and pointing an editor at it is worth
+# the one line, because the router accepts 66 top-level keys at 0.337.1 and
+# silently ignores nothing - a key it does not know is a startup failure.
+#
+# yaml-language-server: $schema=https://raw.githubusercontent.com/wundergraph/cosmo/main/router/pkg/config/config.schema.json
+
+version: "1"
+
+# Where the graph comes from.
+#
+# `router_config_path` is the older spelling of this and is deprecated in
+# favour of execution_config; the environment variable chapter 7 used,
+# EXECUTION_CONFIG_FILE_PATH, is this key's env form and is not deprecated.
+#
+# watch means the router re-reads the file when it changes and swaps the graph
+# in without dropping a request. wgc writes the composed config in place rather
+# than replacing it, so this works even though the file is bind-mounted on its
+# own: recompose while the router is up and the new graph is live about a
+# second later.
+execution_config:
+  file:
+    path: /etc/mosaic/supergraph.json
+    watch: true
+    watch_interval: 1s
+
+# 0.0.0.0, not the default. The default is localhost:3002, which inside a
+# container means the container's own loopback interface and nothing outside it
+# can connect - the router starts, logs that it is serving, and refuses every
+# connection.
+listen_addr: "0.0.0.0:3002"
+
+# Development mode. It buys readable logs and, more importantly here, Advanced
+# Request Tracing without a signed request, which is what makes the query plan
+# headers work. Chapter 7 needed the same thing for the same reason.
+#
+# This is a development baseline and not a production posture, exactly like the
+# ASPNETCORE_ENVIRONMENT: Development on both subgraphs in docker-compose.yml.
+# A deployed router leaves this off and signs its tracing requests instead.
+dev_mode: true
+
+# Named rather than left to the default, because this file is also the answer
+# to "which of these settings is the router actually using". A value here beats
+# the environment variable that sets the same thing, which is the opposite of
+# what most container tooling does; see chapter 10.
+log_level: info

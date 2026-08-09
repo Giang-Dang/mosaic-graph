@@ -38,6 +38,13 @@
     that has quietly stopped composing is exactly the kind of breakage a gate
     exists to catch.
 
+    Since chapter 10 there is a router in front of those two services. This
+    script starts it from docker-compose.yml, runs a third Postman collection
+    against it - the storefront query that no single service can answer, and
+    the plan the router made to answer it - and then runs scripts/router-cases.mjs,
+    which reproduces the three router behaviours chapter 10 calls surprising.
+    That section can be turned off with -SkipRouter.
+
     Nothing here is clever on purpose. A reader who has never written a line of
     PowerShell should be able to read it top to bottom and see what is checked.
 
@@ -64,9 +71,14 @@ param(
     [int] $ReviewsPort = 5202,
     [int] $RouterPort = 3002,
 
-    # Skip the federated-wire section. It is the slowest part of a run and the
-    # only part that pulls a container image from a registry.
+    # Skip the federated-wire section. It is the slowest part of a run and one
+    # of the two that pull a container image from a registry.
     [switch] $SkipWire,
+
+    # Skip chapter 10's router section. Same image as the wire router, so the
+    # pull is shared, but it starts five containers of its own across the
+    # collection and the three router cases.
+    [switch] $SkipRouter,
 
     # How long to wait for the service to answer /health before giving up.
     [int] $StartupTimeoutSeconds = 60,
@@ -116,6 +128,18 @@ $FederationGraph    = Join-Path $RepoRoot 'federation' 'mosaic.yaml'
 # gate has to notice when a fresh compose stops matching it.
 $FederationSupergraph = Join-Path $RepoRoot 'federation' 'supergraph.json'
 $CompositionCases     = Join-Path $RepoRoot 'scripts' 'composition-cases.mjs'
+
+# -- chapter 10's router -----------------------------------------------------
+
+# The router runs from docker-compose.yml like any other service and mounts the
+# two files below: the graph chapter 9 composed, and its own configuration. It
+# publishes the same port as chapter 7's wire-router, which is safe only
+# because the two sections start and stop in sequence.
+$RouterConfig     = Join-Path $RepoRoot 'router' 'config.yaml'
+$RouterPostman    = Join-Path $RepoRoot 'postman' 'mosaic-router.postman_collection.json'
+$RouterPostmanEnv = Join-Path $RepoRoot 'postman' 'mosaic-router.local.postman_environment.json'
+$RouterCases      = Join-Path $RepoRoot 'scripts' 'router-cases.mjs'
+$MosaicRouterUrl  = "http://localhost:$RouterPort"
 
 # -- chapter 7's federated-wire sample ---------------------------------------
 
@@ -424,6 +448,7 @@ $tempDir = $null
 $startedDatabase = $false
 $wireProcesses = @{}
 $startedRouter = $false
+$startedMosaicRouter = $false
 $previousAspNetCoreUrls = $env:ASPNETCORE_URLS
 $aspNetCoreUrlsWasSet = $null -ne $previousAspNetCoreUrls
 $previousAspNetCoreEnvironment = $env:ASPNETCORE_ENVIRONMENT
@@ -1317,6 +1342,105 @@ try {
             }
             Write-Ok 'the composition errors chapter 9 prints are the ones wgc produces'
         }
+
+        # -- 8c. chapter 10: a router in front of the two ---------------------
+
+        # The first section that asks the graph a question rather than asking a
+        # service one. It runs here, after the composed config has been checked
+        # against a fresh compose, because that file is what the router mounts:
+        # verifying the graph the chapter describes means verifying the file the
+        # chapter composed.
+        #
+        # It comes before the federated-wire section on purpose. Both routers
+        # publish 3002 and the two are never meant to be up together, so this
+        # one is taken down again at the end of the block.
+        if ($SkipRouter) {
+            Write-Skipped 'router' '-SkipRouter was passed'
+        } elseif (-not (Test-Path -LiteralPath $RouterConfig)) {
+            Write-Skipped 'router' 'router/config.yaml does not exist yet'
+        } else {
+            if (Test-PortInUse $RouterPort) {
+                Stop-Verify 'start router' (Join-Lines @(
+                    "Something is already listening on port $RouterPort."
+                    'An earlier run may have left one behind: `docker compose down mosaic-router`'
+                    'clears this one, and `docker compose --profile wire down` clears'
+                    "chapter 7's, which publishes the same port."))
+            }
+
+            & docker compose --project-directory $RepoRoot up --detach mosaic-router
+            if ($LASTEXITCODE -ne 0) {
+                Stop-Verify 'start router' (Join-Lines @(
+                    "docker compose up mosaic-router exited with $LASTEXITCODE."
+                    'The first run of this pulls the router image.'))
+            }
+            $startedMosaicRouter = $true
+
+            $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+            $up = $false
+            while ((Get-Date) -lt $deadline) {
+                try {
+                    if ((Invoke-WebRequest -Uri "$MosaicRouterUrl/health" -TimeoutSec 5 -SkipHttpErrorCheck).StatusCode -eq 200) {
+                        $up = $true
+                        break
+                    }
+                } catch {
+                    # Not listening yet.
+                }
+                Start-Sleep -Milliseconds 500
+            }
+            if (-not $up) {
+                Stop-Verify 'start router' (Join-Lines @(
+                    "$MosaicRouterUrl/health did not answer within $StartupTimeoutSeconds seconds."
+                    ''
+                    ((& docker compose --project-directory $RepoRoot logs --tail 40 mosaic-router) | Out-String)))
+            }
+            Write-Ok "the router answers on $MosaicRouterUrl/health"
+
+            # The storefront query, the plan behind it, and what the router
+            # does not expose. Chapter 10 prints all three.
+            if (-not (Test-Path -LiteralPath $RouterPostman) -or -not (Test-Path -LiteralPath $RouterPostmanEnv)) {
+                Write-Skipped 'router postman' 'the router collection or its environment is missing from postman/'
+            } elseif (-not $newmanCommand) {
+                Write-Skipped 'router postman' 'newman is not installed - run npm install first'
+            } else {
+                & $newmanCommand @($newmanPrefix + @(
+                    'run', $RouterPostman,
+                    '--environment', $RouterPostmanEnv,
+                    '--env-var', "routerUrl=$MosaicRouterUrl",
+                    '--bail'))
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'router postman' (Join-Lines @(
+                        "newman exited with $LASTEXITCODE; its output above says which request failed."
+                        'The storefront query answering out of two services is chapter 10''s'
+                        'headline, and the query plan assertions are the listing it prints.'))
+                }
+                Write-Ok 'the router answers the query neither subgraph can'
+            }
+
+            # And the three things chapter 10 says are surprising, each one a
+            # router started on purpose against a config made for the case.
+            # Same arrangement as chapter 9's composition cases and for the same
+            # reason: one implementation, called by both verify scripts.
+            if (-not (Test-Path -LiteralPath $RouterCases)) {
+                Write-Skipped 'router cases' 'scripts/router-cases.mjs does not exist yet'
+            } elseif (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+                Stop-Verify 'router cases' 'node is not on PATH; it is needed to run scripts/router-cases.mjs.'
+            } else {
+                & node $RouterCases
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'router cases' (Join-Lines @(
+                        "scripts/router-cases.mjs exited with $LASTEXITCODE."
+                        'One of the three router behaviours chapter 10 describes has changed.'
+                        'The output above says which. Fix the chapter, not the assertion.'))
+                }
+                Write-Ok 'the router behaves the three ways chapter 10 says it does'
+            }
+
+            # Down rather than stop, and now rather than in the finally block,
+            # because the federated-wire section below wants this port.
+            & docker compose --project-directory $RepoRoot down mosaic-router *> $null
+            $startedMosaicRouter = $false
+        }
     }
 
     # -- 9. chapter 7's federated wire --------------------------------------
@@ -1602,6 +1726,13 @@ try {
         # down rather than stop: the container holds a bind mount on a file this
         # script recomposes on every run, and a stopped container keeps it.
         & docker compose --project-directory $RepoRoot --profile wire down wire-router *> $null
+    }
+
+    # Normally already down: the router section takes its own container away so
+    # that the wire section can have the port. This catches the run that failed
+    # somewhere in between.
+    if ($startedMosaicRouter) {
+        & docker compose --project-directory $RepoRoot down mosaic-router *> $null
     }
 
     if ($aspNetCoreUrlsWasSet) {
