@@ -22,6 +22,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | `ch04-ef` | 4. Data Without the N+1, halfway | The same schema on PostgreSQL through EF Core. Still 146 lookups, and now 146 round trips |
 | `ch04` | 4. Data Without the N+1 | DataLoaders behind the same resolvers: 146 resolvers, 3 round trips. Plus `browseProducts`, paged, filtered, sorted and projected |
 | `ch05` | 5. Schema Design That Survives Change | The `Node` interface and real global identifiers, `Product.reviews` as a connection, Mosaic's first mutation with typed errors, a subscription, and `products` deprecated |
+| `ch07` | 7. How a Federated Query Actually Runs | Mosaic unchanged. A new sample: two tiny subgraphs and the Cosmo Router, with every request between them logged |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -32,7 +33,8 @@ intermediate one.
 - .NET SDK 10.0.302 or later in the same feature band (pinned in `global.json`)
 - Docker. Since chapter 4 Mosaic keeps its data in PostgreSQL, and
   `docker-compose.yml` is the only description of it
-- Node, only to run the Postman collection from the command line
+- Node, to run the Postman collections from the command line and, since chapter
+  7, to compose the sample supergraph with `wgc`
 
 ## Running it
 
@@ -115,13 +117,21 @@ It stops the database container on the way out and leaves its volume in place.
 Pass `-KeepDatabase` (or set `MOSAIC_KEEP_DATABASE=1`) to leave it running, which
 is worth doing while iterating: starting PostgreSQL is the slowest step.
 
-The Postman collection needs newman, which is pinned as a local dev dependency:
+The Postman collections need newman, which is pinned as a local dev dependency:
 
 ```
 npm ci
 npx newman run postman/mosaic.postman_collection.json \
     -e postman/mosaic.local.postman_environment.json
 ```
+
+Since chapter 7 the run finishes with the federated-wire sample: it composes the
+two subgraph schemas, starts both subgraphs and the router, runs a second
+collection against all three, and then checks the subgraph logs for the two
+requests the chapter prints. That last check is the interesting one, because the
+collection reads the router's own account of what it planned and this reads what
+the subgraphs actually received. Pass `-SkipWire` (or set `MOSAIC_SKIP_WIRE=1`)
+to leave it out; it is the slowest section and the only one that pulls an image.
 
 ## Layout
 
@@ -139,8 +149,10 @@ src/Mosaic.Api/          the service; one folder per domain
     Errors/              the Error interface every domain error implements
 samples/three-approaches/  the same tiny schema, three authoring styles
 samples/resolver-scopes/   what [UseRequestScope] changes, in two fields
+samples/federated-wire/    two subgraphs and a router, so the traffic between
+                           them can be read; chapter 7
 schema/                  committed SDL snapshots
-postman/                 collection and environment
+postman/                 collections and environments
 scripts/                 verify.ps1 and verify.sh
 ```
 
@@ -236,3 +248,58 @@ dotnet run --project samples/resolver-scopes
 then ask for two default-scope fields and two request-scope ones in a single
 query. The default ones each get their own service scope; the annotated ones
 share the request's.
+
+## Watching a federated request go through
+
+New in chapter 7, and deliberately not part of Mosaic: Mosaic is one service
+until chapter 8, and this sample exists only so that the messages between a
+router and a subgraph can be read without anything else in the way.
+
+Two subgraphs share one entity. Catalog owns `Product` and gives it a title and
+a price; Reviews declares the same `Product` with the same key and adds
+`reviews`. Three products, four reviews, no database.
+
+```
+dotnet run --project samples/federated-wire/Mosaic.Sample.Wire.Catalog   # :5201
+dotnet run --project samples/federated-wire/Mosaic.Sample.Wire.Reviews   # :5202
+
+npx wgc router compose -i samples/federated-wire/graph.yaml \
+                       -o samples/federated-wire/supergraph.json
+docker compose --profile wire up -d wire-router                          # :3002
+```
+
+Then ask the router for something neither subgraph can answer alone:
+
+```graphql
+{ products { title price reviews { rating body } } }
+```
+
+Both subgraphs log every request and response in full, headers and bodies
+included, through ASP.NET Core's own HTTP logging middleware. The catalog
+console shows the router asking for two fields it was told about and two it was
+not:
+
+```
+RequestBody: {"query":"{products {title price __typename id}}"}
+```
+
+and the reviews console shows the second fetch, with all three products in one
+call:
+
+```
+RequestBody: {"variables":{"representations":[{"__typename":"Product","id":"1"},
+  {"__typename":"Product","id":"2"},{"__typename":"Product","id":"3"}]},
+  "query":"query($representations: [_Any!]!){_entities(representations: ...
+```
+
+To see the plan behind that without executing it:
+
+```
+curl -s http://localhost:3002/graphql \
+  -H 'Content-Type: application/json' \
+  -H 'X-WG-Include-Query-Plan: true' \
+  -H 'X-WG-Skip-Loader: true' \
+  -d '{"query":"{ products { title reviews { rating } } }"}'
+```
+
+Both headers need `DEV_MODE` on the router, which `docker-compose.yml` sets.

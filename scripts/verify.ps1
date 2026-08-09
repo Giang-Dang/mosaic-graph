@@ -22,6 +22,13 @@
     changed, and a gate whose result depends on how many times it has been run
     is not a gate. Do not point this at a database holding anything you want.
 
+    Since chapter 7 it also verifies the federated-wire sample: it composes the
+    two subgraph schemas with wgc, starts both subgraphs and the Cosmo Router,
+    runs a second Postman collection against all three, and checks that the
+    requests the router sent are the ones the chapter prints. That section
+    needs Docker again, pulls the router image the first time, and can be
+    turned off with -SkipWire.
+
     Nothing here is clever on purpose. A reader who has never written a line of
     PowerShell should be able to read it top to bottom and see what is checked.
 
@@ -37,6 +44,17 @@ param(
     # The port the service is started on. Matches docker-compose.yml and the
     # http launch profile.
     [int] $Port = 5100,
+
+    # Chapter 7's federated-wire sample: two subgraphs on the host and the
+    # Cosmo Router in a container. All three match the launch profiles, the
+    # routing URLs in samples/federated-wire/graph.yaml, and docker-compose.yml.
+    [int] $CatalogPort = 5201,
+    [int] $ReviewsPort = 5202,
+    [int] $RouterPort = 3002,
+
+    # Skip the federated-wire section. It is the slowest part of a run and the
+    # only part that pulls a container image from a registry.
+    [switch] $SkipWire,
 
     # How long to wait for the service to answer /health before giving up.
     [int] $StartupTimeoutSeconds = 60,
@@ -70,6 +88,47 @@ $SampleSchemaDir    = Join-Path $RepoRoot 'schema' 'samples'
 $PostmanCollection  = Join-Path $RepoRoot 'postman' 'mosaic.postman_collection.json'
 $PostmanEnvironment = Join-Path $RepoRoot 'postman' 'mosaic.local.postman_environment.json'
 $BaseUrl            = "http://localhost:$Port"
+
+# -- chapter 7's federated-wire sample ---------------------------------------
+
+$WireDir            = Join-Path $RepoRoot 'samples' 'federated-wire'
+$WireGraph          = Join-Path $WireDir 'graph.yaml'
+$WireSupergraph     = Join-Path $WireDir 'supergraph.json'
+$WirePostman        = Join-Path $RepoRoot 'postman' 'federated-wire.postman_collection.json'
+$WirePostmanEnv     = Join-Path $RepoRoot 'postman' 'federated-wire.local.postman_environment.json'
+$CatalogUrl         = "http://localhost:$CatalogPort"
+$ReviewsUrl         = "http://localhost:$ReviewsPort"
+$RouterUrl          = "http://localhost:$RouterPort"
+
+# The two subgraphs: the project that produces each one, and the schema it has
+# to keep publishing. Both files are what `_service { sdl }` returns, which is
+# what a composer reads, so this is a check on the federated contract and not
+# only on the SDL.
+$WireSubgraphs = [ordered] @{
+    'catalog' = @{
+        Project = Join-Path $WireDir 'Mosaic.Sample.Wire.Catalog'
+        Schema  = Join-Path $SampleSchemaDir 'wire-catalog.graphql'
+        Url     = $CatalogUrl
+        Port    = $CatalogPort
+    }
+    'reviews' = @{
+        Project = Join-Path $WireDir 'Mosaic.Sample.Wire.Reviews'
+        Schema  = Join-Path $SampleSchemaDir 'wire-reviews.graphql'
+        Url     = $ReviewsUrl
+        Port    = $ReviewsPort
+    }
+}
+
+# What chapter 7 prints, asserted against what the subgraphs actually received.
+# These are the two request bodies the router sent while the Postman collection
+# ran, quoted exactly as the chapter quotes them. A change to the router's
+# planning shows up here as a failed gate rather than as a stale listing.
+$ExpectedCatalogFetch = '{"query":"{products {title price __typename id}}"}'
+$ExpectedReviewsFetch =
+    '{"variables":{"representations":[{"__typename":"Product","id":"1"},' +
+    '{"__typename":"Product","id":"2"},{"__typename":"Product","id":"3"}]},' +
+    '"query":"query($representations: [_Any!]!){_entities(representations: $representations)' +
+    '{... on Product {__typename reviews {rating body}}}}"}'
 
 # The three sample projects, in the order the chapter introduces them: the name
 # each schema is committed under in schema/samples, and the folder under
@@ -310,6 +369,8 @@ function Get-LogTail {
 $apiProcess = $null
 $tempDir = $null
 $startedDatabase = $false
+$wireProcesses = @{}
+$startedRouter = $false
 $previousAspNetCoreUrls = $env:ASPNETCORE_URLS
 $aspNetCoreUrlsWasSet = $null -ne $previousAspNetCoreUrls
 $previousAspNetCoreEnvironment = $env:ASPNETCORE_ENVIRONMENT
@@ -841,6 +902,241 @@ try {
         }
         Write-Ok 'postman collection'
     }
+
+    # -- 9. chapter 7's federated wire --------------------------------------
+
+    # Two subgraphs on the host and the Cosmo Router in a container. This is
+    # the one section that needs a registry pull, and the one that can be
+    # skipped, because everything above it is about Mosaic and none of this is.
+    if ($SkipWire) {
+        Write-Skipped 'federated wire' '-SkipWire was passed'
+    } elseif (-not (Test-Path -LiteralPath $WireDir)) {
+        Write-Skipped 'federated wire' 'samples/federated-wire does not exist yet'
+    } elseif (-not $newmanCommand) {
+        Write-Skipped 'federated wire' 'newman is not installed - run npm install first'
+    } else {
+        # -- 9a. compose the supergraph -------------------------------------
+
+        # wgc is a local dev dependency, pinned in package.json beside newman.
+        # It composes from the two committed schema files and talks to nothing.
+        $wgcCommand = $null
+        $wgcPrefix = @()
+        $localWgc = Join-Path $RepoRoot 'node_modules' '.bin' ($IsWindows ? 'wgc.cmd' : 'wgc')
+        if (Test-Path -LiteralPath $localWgc) {
+            $wgcCommand = $localWgc
+        } elseif (Get-Command npx -ErrorAction SilentlyContinue) {
+            & npx --no wgc --help *> $null
+            if ($LASTEXITCODE -eq 0) {
+                $wgcCommand = 'npx'
+                $wgcPrefix = @('--no', 'wgc')
+            }
+        }
+
+        if (-not $wgcCommand) {
+            Stop-Verify 'federated wire' (Join-Lines @(
+                'wgc is not installed, and the router cannot start without a composed'
+                'execution config. It is a dev dependency: run npm install.'))
+        }
+
+        & $wgcCommand @($wgcPrefix + @('router', 'compose', '-i', $WireGraph, '-o', $WireSupergraph))
+        if ($LASTEXITCODE -ne 0) {
+            Stop-Verify 'wire composition' (Join-Lines @(
+                "wgc router compose exited with $LASTEXITCODE."
+                'Composition failing is a real finding, not a tooling problem: the two'
+                'subgraph schemas under schema/samples no longer compose into one graph.'))
+        }
+        if (-not (Test-Path -LiteralPath $WireSupergraph)) {
+            Stop-Verify 'wire composition' "wgc reported success but wrote nothing to $WireSupergraph."
+        }
+        Write-Ok 'wgc composed the two subgraphs into one supergraph'
+
+        # -- 9b. start both subgraphs ---------------------------------------
+
+        foreach ($name in $WireSubgraphs.Keys) {
+            $subgraph = $WireSubgraphs[$name]
+            if (Test-PortInUse $subgraph.Port) {
+                Stop-Verify "start $name subgraph" (Join-Lines @(
+                    "Something is already listening on port $($subgraph.Port)."
+                    'Stop it first: an earlier run of this script, or a debugger.'))
+            }
+
+            $env:ASPNETCORE_URLS = $subgraph.Url
+            $stdout = Join-Path $tempDir "wire-$name.out.log"
+            $stderr = Join-Path $tempDir "wire-$name.err.log"
+            $subgraph.Stdout = $stdout
+
+            $wireProcesses[$name] = Start-Process `
+                -FilePath 'dotnet' `
+                -ArgumentList @('run', '--project', $subgraph.Project, '-c', 'Release', '--no-build', '--no-launch-profile') `
+                -WorkingDirectory $RepoRoot `
+                -RedirectStandardOutput $stdout `
+                -RedirectStandardError $stderr `
+                -NoNewWindow `
+                -PassThru
+        }
+
+        foreach ($name in $WireSubgraphs.Keys) {
+            $subgraph = $WireSubgraphs[$name]
+            $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+            $up = $false
+            while ((Get-Date) -lt $deadline) {
+                if ($wireProcesses[$name].HasExited) {
+                    Stop-Verify "start $name subgraph" (Join-Lines @(
+                        "The $name subgraph exited with code $($wireProcesses[$name].ExitCode) during start-up."
+                        ''
+                        (Get-LogTail $subgraph.Stdout)))
+                }
+                try {
+                    $probe = Invoke-WebRequest -Uri "$($subgraph.Url)/graphql" `
+                        -Method Post -ContentType 'application/json' `
+                        -Headers @{ Accept = 'application/json' } `
+                        -Body '{"query":"{ __typename }"}' -TimeoutSec 5 -SkipHttpErrorCheck
+                    if ($probe.StatusCode -eq 200) {
+                        $up = $true
+                        break
+                    }
+                } catch {
+                    # Not listening yet.
+                }
+                Start-Sleep -Milliseconds 500
+            }
+            if (-not $up) {
+                Stop-Verify "start $name subgraph" (Join-Lines @(
+                    "$($subgraph.Url)/graphql did not answer within $StartupTimeoutSeconds seconds."
+                    ''
+                    (Get-LogTail $subgraph.Stdout)))
+            }
+        }
+        Write-Ok "both subgraphs answering on $CatalogPort and $ReviewsPort"
+
+        # -- 9c. the published schemas --------------------------------------
+
+        # Not `schema export` but the field a composer actually reads. The two
+        # happen to agree in HotChocolate 16.6.0; asserting the one the router
+        # ecosystem depends on is the assertion worth having.
+        foreach ($name in $WireSubgraphs.Keys) {
+            $subgraph = $WireSubgraphs[$name]
+            $serviceResponse = Invoke-WebRequest -Uri "$($subgraph.Url)/graphql" `
+                -Method Post -ContentType 'application/json' `
+                -Headers @{ Accept = 'application/json' } `
+                -Body '{"query":"{ _service { sdl } }"}' -TimeoutSec 30 -SkipHttpErrorCheck
+
+            if ($serviceResponse.StatusCode -ne 200) {
+                Stop-Verify "$name _service" (Join-Lines @(
+                    "_service on the $name subgraph answered $($serviceResponse.StatusCode)."
+                    $serviceResponse.Content))
+            }
+
+            $publishedSdl = ($serviceResponse.Content | ConvertFrom-Json).data._service.sdl
+            $publishedPath = Join-Path $tempDir "wire-$name.published.graphql"
+            [System.IO.File]::WriteAllText($publishedPath, $publishedSdl)
+
+            if (-not (Test-SameText $subgraph.Schema $publishedPath)) {
+                Stop-Verify "$name subgraph schema" (Join-Lines @(
+                    "What the $name subgraph publishes is not what is committed in"
+                    "$($subgraph.Schema)."
+                    ''
+                    'That file is the composer''s input. If the change is deliberate,'
+                    'regenerate it from _service and recompose; if it is not, something'
+                    'moved the federated contract without saying so.'
+                    ''
+                    (Get-SchemaDiff -ExpectedPath $subgraph.Schema -ActualPath $publishedPath `
+                        -WorkDir $tempDir -Label "wire-$name")))
+            }
+        }
+        Write-Ok 'both subgraphs publish the committed schemas through _service'
+
+        # -- 9d. the router --------------------------------------------------
+
+        if (Test-PortInUse $RouterPort) {
+            Stop-Verify 'start router' (Join-Lines @(
+                "Something is already listening on port $RouterPort."
+                'Stop it first: `docker compose --profile wire down` clears an earlier run.'))
+        }
+
+        & docker compose --project-directory $RepoRoot --profile wire up --detach wire-router
+        if ($LASTEXITCODE -ne 0) {
+            Stop-Verify 'start router' (Join-Lines @(
+                "docker compose up wire-router exited with $LASTEXITCODE."
+                'The first run of this pulls the router image; a failure here is'
+                'usually the registry rather than the graph.'))
+        }
+        $startedRouter = $true
+
+        $routerDeadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+        $routerUp = $false
+        while ((Get-Date) -lt $routerDeadline) {
+            try {
+                $health = Invoke-WebRequest -Uri "$RouterUrl/health" -TimeoutSec 5 -SkipHttpErrorCheck
+                if ($health.StatusCode -eq 200) {
+                    $routerUp = $true
+                    break
+                }
+            } catch {
+                # Not listening yet.
+            }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $routerUp) {
+            Stop-Verify 'start router' (Join-Lines @(
+                "$RouterUrl/health did not answer within $StartupTimeoutSeconds seconds."
+                ''
+                ((& docker compose --project-directory $RepoRoot logs --tail 40 wire-router) | Out-String)))
+        }
+        Write-Ok "router answering on $RouterUrl/health"
+
+        # -- 9e. the collection ----------------------------------------------
+
+        if (-not (Test-Path -LiteralPath $WirePostman) -or -not (Test-Path -LiteralPath $WirePostmanEnv)) {
+            Stop-Verify 'wire postman' 'the federated-wire collection or its environment is missing from postman/'
+        }
+
+        $wireArgs = $newmanPrefix + @(
+            'run', $WirePostman,
+            '--environment', $WirePostmanEnv,
+            '--env-var', "catalogUrl=$CatalogUrl",
+            '--env-var', "reviewsUrl=$ReviewsUrl",
+            '--env-var', "routerUrl=$RouterUrl",
+            '--bail')
+        & $newmanCommand @wireArgs
+        if ($LASTEXITCODE -ne 0) {
+            Stop-Verify 'wire postman' "newman exited with $LASTEXITCODE; its output above says which request failed."
+        }
+        Write-Ok 'federated-wire postman collection'
+
+        # -- 9f. what actually went over the wire -----------------------------
+
+        # The collection asserts the query plan the router reports. This asserts
+        # the requests the subgraphs received, which is the same claim checked
+        # from the other end, and it is the pair of listings chapter 7 prints.
+        # .Contains, not -like: the reviews body below is a JSON array, and -like
+        # would read its square brackets as a wildcard character class and match
+        # nothing. The catalog body has no brackets and would have passed either
+        # way, which is exactly how that bug survives being written.
+        $catalogLog = Get-LogText $WireSubgraphs['catalog'].Stdout
+        if (-not $catalogLog.Contains($ExpectedCatalogFetch)) {
+            Stop-Verify 'wire traffic' (Join-Lines @(
+                'The catalog subgraph never received the request chapter 7 prints:'
+                ''
+                "    $ExpectedCatalogFetch"
+                ''
+                'The router adds __typename and id to that selection because it needs'
+                'a key for the second fetch. If the body changed, the chapter is wrong'
+                'rather than the router.'))
+        }
+
+        $reviewsLog = Get-LogText $WireSubgraphs['reviews'].Stdout
+        if (-not $reviewsLog.Contains($ExpectedReviewsFetch)) {
+            Stop-Verify 'wire traffic' (Join-Lines @(
+                'The reviews subgraph never received the entity fetch chapter 7 prints:'
+                ''
+                "    $ExpectedReviewsFetch"
+                ''
+                'Three representations in one call is the claim. Three separate calls'
+                'would still answer correctly and would still fail this check.'))
+        }
+        Write-Ok 'the router sent the two requests chapter 7 prints'
+    }
 } catch {
     $exitCode = 1
     if (-not $script:Failed) {
@@ -873,6 +1169,24 @@ try {
         if (Test-PortInUse $Port) {
             Write-Host "Warning: something is still listening on port $Port after the service was stopped." -ForegroundColor Yellow
         }
+    }
+
+    foreach ($name in @($wireProcesses.Keys)) {
+        $process = $wireProcesses[$name]
+        if ($process -and -not $process.HasExited) {
+            try {
+                $process.Kill($true)
+                [void] $process.WaitForExit(15000)
+            } catch {
+                Write-Host "Could not stop the $name subgraph (pid $($process.Id)): $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+    }
+
+    if ($startedRouter) {
+        # down rather than stop: the container holds a bind mount on a file this
+        # script recomposes on every run, and a stopped container keeps it.
+        & docker compose --project-directory $RepoRoot --profile wire down wire-router *> $null
     }
 
     if ($aspNetCoreUrlsWasSet) {

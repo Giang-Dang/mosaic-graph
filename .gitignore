@@ -13,3 +13,7 @@ TestResults/
 # `dotnet run -- schema export` writes this next to the SDL; the SDL is the
 # artifact we track, the settings dump is not.
 *-settings.json
+
+# Chapter 7 composes this from samples/federated-wire/graph.yaml. It is a
+# build artifact of two committed schemas, not a source file.
+samples/federated-wire/supergraph.json

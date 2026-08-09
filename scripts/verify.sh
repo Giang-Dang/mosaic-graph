@@ -17,6 +17,12 @@
 # and a gate whose result depends on how many times it has been run is not a
 # gate. Do not point this at a database holding anything you want.
 #
+# Since chapter 7 it also verifies the federated-wire sample: it composes the
+# two subgraph schemas with wgc, starts both subgraphs and the Cosmo Router,
+# runs a second Postman collection against all three, and checks that the
+# requests the router sent are the ones the chapter prints. Set
+# MOSAIC_SKIP_WIRE=1 to leave that out.
+#
 # scripts/verify.ps1 is the same script for readers on Windows. Changes to one
 # belong in the other.
 #
@@ -31,6 +37,17 @@ PORT="${MOSAIC_PORT:-5100}"
 STARTUP_TIMEOUT_SECONDS="${MOSAIC_STARTUP_TIMEOUT:-60}"
 DATABASE_TIMEOUT_SECONDS="${MOSAIC_DATABASE_TIMEOUT:-90}"
 KEEP_DATABASE="${MOSAIC_KEEP_DATABASE:-0}"
+
+# Chapter 7's federated-wire sample: two subgraphs on the host and the Cosmo
+# Router in a container. All three match the launch profiles, the routing URLs
+# in samples/federated-wire/graph.yaml, and docker-compose.yml.
+CATALOG_PORT="${MOSAIC_CATALOG_PORT:-5201}"
+REVIEWS_PORT="${MOSAIC_REVIEWS_PORT:-5202}"
+ROUTER_PORT="${MOSAIC_ROUTER_PORT:-3002}"
+
+# Set MOSAIC_SKIP_WIRE=1 to leave that section out. It is the slowest part of a
+# run and the only part that pulls a container image from a registry.
+SKIP_WIRE="${MOSAIC_SKIP_WIRE:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -111,12 +128,38 @@ EXPECTED_SQL_COMMAND_COUNT=3
 VERIFY_QUERY_RUNS=5
 SPLIT_BATCH_ALLOWANCE=1
 
+WIRE_DIR="$REPO_ROOT/samples/federated-wire"
+WIRE_GRAPH="$WIRE_DIR/graph.yaml"
+WIRE_SUPERGRAPH="$WIRE_DIR/supergraph.json"
+WIRE_POSTMAN="$REPO_ROOT/postman/federated-wire.postman_collection.json"
+WIRE_POSTMAN_ENV="$REPO_ROOT/postman/federated-wire.local.postman_environment.json"
+CATALOG_URL="http://localhost:$CATALOG_PORT"
+REVIEWS_URL="http://localhost:$REVIEWS_PORT"
+ROUTER_URL="http://localhost:$ROUTER_PORT"
+
+# The two subgraphs, written as <name>:<project folder>:<port>. The committed
+# schema for each is schema/samples/wire-<name>.graphql, and it is what
+# `_service { sdl }` returns rather than what `schema export` writes: that
+# field is the composer's input, so it is the one worth asserting.
+WIRE_SUBGRAPHS="catalog:Mosaic.Sample.Wire.Catalog:$CATALOG_PORT
+reviews:Mosaic.Sample.Wire.Reviews:$REVIEWS_PORT"
+
+# What chapter 7 prints, asserted against what the subgraphs actually received.
+# These are the two request bodies the router sent while the Postman collection
+# ran, quoted exactly as the chapter quotes them. A change to the router's
+# planning shows up here as a failed gate rather than as a stale listing.
+EXPECTED_CATALOG_FETCH='{"query":"{products {title price __typename id}}"}'
+EXPECTED_REVIEWS_FETCH='{"variables":{"representations":[{"__typename":"Product","id":"1"},{"__typename":"Product","id":"2"},{"__typename":"Product","id":"3"}]},"query":"query($representations: [_Any!]!){_entities(representations: $representations){... on Product {__typename reviews {rating body}}}}"}'
+
 API_PID=""
 TEMP_DIR=""
 API_LOG=""
 SUMMARY=""
 JSON_TOOL=""
 STARTED_DATABASE=0
+CATALOG_PID=""
+REVIEWS_PID=""
+STARTED_ROUTER=0
 
 # ---------------------------------------------------------------------------
 # Step reporting
@@ -182,14 +225,18 @@ schema_diff() {
 # of refusing it, and reading that as "port taken" would block every run. The
 # cost of being wrong is small: the service then fails to bind, and the health
 # poll below reports that with the service's own error in the message.
-port_in_use() {
+port_taken() {
     local rc
-    curl -s -o /dev/null --connect-timeout 1 --max-time 2 "http://127.0.0.1:${PORT}/" >/dev/null 2>&1
+    curl -s -o /dev/null --connect-timeout 1 --max-time 2 "http://127.0.0.1:${1}/" >/dev/null 2>&1
     rc=$?
     case "$rc" in
         7 | 28) return 1 ;;
         *) return 0 ;;
     esac
+}
+
+port_in_use() {
+    port_taken "$PORT"
 }
 
 # Prints "<has_errors> <product_count> <review_count>", tab separated. jq is the
@@ -274,10 +321,51 @@ stop_api() {
     fi
 }
 
+# The subgraphs are plain `dotnet run` children like the API, and go the same
+# way: children first, then the process this script started.
+stop_wire_subgraph() {
+    local pid="$1"
+    if [ -z "$pid" ]; then
+        return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    if command -v pkill >/dev/null 2>&1; then
+        pkill -TERM -P "$pid" >/dev/null 2>&1 || true
+    fi
+    kill -TERM "$pid" >/dev/null 2>&1 || true
+
+    local waited=0
+    while [ "$waited" -lt 100 ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+
+    if kill -0 "$pid" 2>/dev/null; then
+        if command -v pkill >/dev/null 2>&1; then
+            pkill -KILL -P "$pid" >/dev/null 2>&1 || true
+        fi
+        kill -KILL "$pid" >/dev/null 2>&1 || true
+    fi
+    wait "$pid" 2>/dev/null || true
+}
+
 cleanup() {
     status=$?
 
     stop_api
+    stop_wire_subgraph "$CATALOG_PID"
+    stop_wire_subgraph "$REVIEWS_PID"
+    CATALOG_PID=""
+    REVIEWS_PID=""
+
+    # down rather than stop: the container holds a bind mount on a file this
+    # script recomposes on every run, and a stopped container keeps it.
+    if [ "$STARTED_ROUTER" -eq 1 ]; then
+        docker compose --project-directory "$REPO_ROOT" --profile wire down wire-router \
+            >/dev/null 2>&1 || true
+    fi
 
     if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
         rm -rf "$TEMP_DIR"
@@ -782,6 +870,233 @@ else
     step_ok 'postman collection'
 fi
 
-# -- 8. the EXIT trap stops the service and prints the summary --------------
+# -- 9. chapter 7's federated wire ------------------------------------------
+
+# Two subgraphs on the host and the Cosmo Router in a container. This is the one
+# section that needs a registry pull, and the one that can be skipped, because
+# everything above it is about Mosaic and none of this is.
+if [ "$SKIP_WIRE" = "1" ]; then
+    step_skip 'federated wire' 'MOSAIC_SKIP_WIRE=1 was set'
+elif [ ! -d "$WIRE_DIR" ]; then
+    step_skip 'federated wire' 'samples/federated-wire does not exist yet'
+elif [ -z "$NEWMAN_BIN" ]; then
+    step_skip 'federated wire' 'newman is not installed - run npm install first'
+else
+    # -- 9a. compose the supergraph -----------------------------------------
+
+    # wgc is a local dev dependency, pinned in package.json beside newman. It
+    # composes from the two committed schema files and talks to nothing.
+    WGC_BIN=""
+    WGC_VIA_NPX=0
+    if [ -x "$REPO_ROOT/node_modules/.bin/wgc" ]; then
+        WGC_BIN="$REPO_ROOT/node_modules/.bin/wgc"
+    elif command -v npx >/dev/null 2>&1 && npx --no wgc --help >/dev/null 2>&1; then
+        WGC_BIN="npx"
+        WGC_VIA_NPX=1
+    fi
+
+    if [ -z "$WGC_BIN" ]; then
+        step_fail 'federated wire' 'wgc is not installed, and the router cannot start without a
+composed execution config. It is a dev dependency: run npm install.'
+    fi
+
+    if [ "$WGC_VIA_NPX" -eq 1 ]; then
+        "$WGC_BIN" --no wgc router compose -i "$WIRE_GRAPH" -o "$WIRE_SUPERGRAPH"
+    else
+        "$WGC_BIN" router compose -i "$WIRE_GRAPH" -o "$WIRE_SUPERGRAPH"
+    fi
+    if [ $? -ne 0 ]; then
+        step_fail 'wire composition' 'wgc router compose failed.
+Composition failing is a real finding, not a tooling problem: the two subgraph
+schemas under schema/samples no longer compose into one graph.'
+    fi
+    if [ ! -f "$WIRE_SUPERGRAPH" ]; then
+        step_fail 'wire composition' "wgc reported success but wrote nothing to $WIRE_SUPERGRAPH."
+    fi
+    step_ok 'wgc composed the two subgraphs into one supergraph'
+
+    # -- 9b. start both subgraphs -------------------------------------------
+
+    for entry in $WIRE_SUBGRAPHS; do
+        name="${entry%%:*}"
+        rest="${entry#*:}"
+        project="$WIRE_DIR/${rest%%:*}"
+        subgraph_port="${rest##*:}"
+
+        if port_taken "$subgraph_port"; then
+            step_fail "start $name subgraph" "Something is already listening on port $subgraph_port.
+Stop it first: an earlier run of this script, or a debugger."
+        fi
+
+        ASPNETCORE_URLS="http://localhost:$subgraph_port" ASPNETCORE_ENVIRONMENT=Development \
+            dotnet run --project "$project" -c Release --no-build --no-launch-profile \
+            > "$TEMP_DIR/wire-$name.log" 2>&1 &
+        if [ "$name" = "catalog" ]; then
+            CATALOG_PID=$!
+        else
+            REVIEWS_PID=$!
+        fi
+    done
+
+    for entry in $WIRE_SUBGRAPHS; do
+        name="${entry%%:*}"
+        rest="${entry#*:}"
+        subgraph_port="${rest##*:}"
+
+        deadline=$(( $(date +%s) + STARTUP_TIMEOUT_SECONDS ))
+        up=0
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            if curl -fsS -o /dev/null --max-time 5 \
+                -H 'Content-Type: application/json' \
+                -H 'Accept: application/json' \
+                --data-binary '{"query":"{ __typename }"}' \
+                "http://localhost:$subgraph_port/graphql" 2>/dev/null; then
+                up=1
+                break
+            fi
+            sleep 0.5
+        done
+
+        if [ "$up" -ne 1 ]; then
+            step_fail "start $name subgraph" "http://localhost:$subgraph_port/graphql did not answer within $STARTUP_TIMEOUT_SECONDS seconds.
+
+$(tail -n 40 "$TEMP_DIR/wire-$name.log" 2>/dev/null)"
+        fi
+    done
+    step_ok "both subgraphs answering on $CATALOG_PORT and $REVIEWS_PORT"
+
+    # -- 9c. the published schemas ------------------------------------------
+
+    for entry in $WIRE_SUBGRAPHS; do
+        name="${entry%%:*}"
+        rest="${entry#*:}"
+        subgraph_port="${rest##*:}"
+        committed="$SAMPLE_SCHEMA_DIR/wire-$name.graphql"
+
+        service_status="$(curl -sS -o "$TEMP_DIR/wire-$name.service.json" -w '%{http_code}' \
+            --max-time 30 \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            --data-binary '{"query":"{ _service { sdl } }"}' \
+            "http://localhost:$subgraph_port/graphql")"
+
+        if [ "$service_status" != "200" ]; then
+            step_fail "$name _service" "_service on the $name subgraph answered $service_status.
+
+$(cat "$TEMP_DIR/wire-$name.service.json" 2>/dev/null)"
+        fi
+
+        if [ "$JSON_TOOL" = "jq" ]; then
+            jq -r '.data._service.sdl' "$TEMP_DIR/wire-$name.service.json" \
+                > "$TEMP_DIR/wire-$name.published.graphql"
+        else
+            python3 -c 'import json,sys; sys.stdout.write(json.load(open(sys.argv[1], encoding="utf-8"))["data"]["_service"]["sdl"])' \
+                "$TEMP_DIR/wire-$name.service.json" > "$TEMP_DIR/wire-$name.published.graphql"
+        fi
+
+        if [ ! -f "$committed" ]; then
+            step_fail "$name subgraph schema" "There is no committed snapshot at $committed."
+        fi
+
+        if ! same_text "$committed" "$TEMP_DIR/wire-$name.published.graphql"; then
+            step_fail "$name subgraph schema" "What the $name subgraph publishes is not what is committed in
+schema/samples/wire-$name.graphql.
+
+That file is the composer's input. If the change is deliberate, regenerate it
+from _service and recompose; if it is not, something moved the federated
+contract without saying so.
+
+$(schema_diff "$committed" "$TEMP_DIR/wire-$name.published.graphql" "wire-$name")"
+        fi
+    done
+    step_ok 'both subgraphs publish the committed schemas through _service'
+
+    # -- 9d. the router ------------------------------------------------------
+
+    if port_taken "$ROUTER_PORT"; then
+        step_fail 'start router' "Something is already listening on port $ROUTER_PORT.
+Stop it first: \`docker compose --profile wire down\` clears an earlier run."
+    fi
+
+    docker compose --project-directory "$REPO_ROOT" --profile wire up --detach wire-router
+    if [ $? -ne 0 ]; then
+        step_fail 'start router' 'docker compose up wire-router failed.
+The first run of this pulls the router image; a failure here is usually the
+registry rather than the graph.'
+    fi
+    STARTED_ROUTER=1
+
+    router_deadline=$(( $(date +%s) + STARTUP_TIMEOUT_SECONDS ))
+    router_up=0
+    while [ "$(date +%s)" -lt "$router_deadline" ]; do
+        if curl -fsS -o /dev/null --max-time 5 "$ROUTER_URL/health" 2>/dev/null; then
+            router_up=1
+            break
+        fi
+        sleep 0.5
+    done
+
+    if [ "$router_up" -ne 1 ]; then
+        step_fail 'start router' "$ROUTER_URL/health did not answer within $STARTUP_TIMEOUT_SECONDS seconds.
+
+$(docker compose --project-directory "$REPO_ROOT" logs --tail 40 wire-router 2>&1)"
+    fi
+    step_ok "router answering on $ROUTER_URL/health"
+
+    # -- 9e. the collection --------------------------------------------------
+
+    if [ ! -f "$WIRE_POSTMAN" ] || [ ! -f "$WIRE_POSTMAN_ENV" ]; then
+        step_fail 'wire postman' 'the federated-wire collection or its environment is missing from postman/'
+    fi
+
+    if [ "$NEWMAN_VIA_NPX" -eq 1 ]; then
+        "$NEWMAN_BIN" --no newman run "$WIRE_POSTMAN" \
+            --environment "$WIRE_POSTMAN_ENV" \
+            --env-var "catalogUrl=$CATALOG_URL" \
+            --env-var "reviewsUrl=$REVIEWS_URL" \
+            --env-var "routerUrl=$ROUTER_URL" \
+            --bail
+    else
+        "$NEWMAN_BIN" run "$WIRE_POSTMAN" \
+            --environment "$WIRE_POSTMAN_ENV" \
+            --env-var "catalogUrl=$CATALOG_URL" \
+            --env-var "reviewsUrl=$REVIEWS_URL" \
+            --env-var "routerUrl=$ROUTER_URL" \
+            --bail
+    fi
+    if [ $? -ne 0 ]; then
+        step_fail 'wire postman' 'newman failed; its output above says which request failed.'
+    fi
+    step_ok 'federated-wire postman collection'
+
+    # -- 9f. what actually went over the wire --------------------------------
+
+    # The collection asserts the query plan the router reports. This asserts the
+    # requests the subgraphs received, which is the same claim checked from the
+    # other end, and it is the pair of listings chapter 7 prints. grep -F, not
+    # grep: both strings are full of characters a regular expression would read
+    # as syntax.
+    if ! grep -qF "$EXPECTED_CATALOG_FETCH" "$TEMP_DIR/wire-catalog.log"; then
+        step_fail 'wire traffic' "The catalog subgraph never received the request chapter 7 prints:
+
+    $EXPECTED_CATALOG_FETCH
+
+The router adds __typename and id to that selection because it needs a key for
+the second fetch. If the body changed, the chapter is wrong rather than the
+router."
+    fi
+
+    if ! grep -qF "$EXPECTED_REVIEWS_FETCH" "$TEMP_DIR/wire-reviews.log"; then
+        step_fail 'wire traffic' "The reviews subgraph never received the entity fetch chapter 7 prints:
+
+    $EXPECTED_REVIEWS_FETCH
+
+Three representations in one call is the claim. Three separate calls would still
+answer correctly and would still fail this check."
+    fi
+    step_ok 'the router sent the two requests chapter 7 prints'
+fi
+
+# -- 10. the EXIT trap stops the service and prints the summary -------------
 
 exit 0

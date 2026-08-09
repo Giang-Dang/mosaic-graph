@@ -7,5 +7,7 @@
     <Project Path="samples/three-approaches/Mosaic.Sample.CodeFirst/Mosaic.Sample.CodeFirst.csproj" />
     <Project Path="samples/three-approaches/Mosaic.Sample.SchemaFirst/Mosaic.Sample.SchemaFirst.csproj" />
     <Project Path="samples/resolver-scopes/Mosaic.Sample.ResolverScopes.csproj" />
+    <Project Path="samples/federated-wire/Mosaic.Sample.Wire.Catalog/Mosaic.Sample.Wire.Catalog.csproj" />
+    <Project Path="samples/federated-wire/Mosaic.Sample.Wire.Reviews/Mosaic.Sample.Wire.Reviews.csproj" />
   </Folder>
 </Solution>

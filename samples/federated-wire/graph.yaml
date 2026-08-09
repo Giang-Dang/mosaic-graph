@@ -1,0 +1,26 @@
+# The composer's input: every subgraph in this graph, where the router should
+# send queries for it, and where its schema can be read.
+#
+#   npx wgc router compose -i samples/federated-wire/graph.yaml \
+#                          -o samples/federated-wire/supergraph.json
+#
+# This runs entirely locally. There is no Cosmo account, no schema registry and
+# no network call to anything but the files named below. Chapter 9 is about
+# what the composer does with them; chapter 7 only needs the output.
+#
+# The routing URLs say host.docker.internal because the router runs in a
+# container and the subgraphs run on the host. Change them to localhost if you
+# run the router as a binary instead.
+
+version: 1
+
+subgraphs:
+  - name: catalog
+    routing_url: http://host.docker.internal:5201/graphql
+    schema:
+      file: ../../schema/samples/wire-catalog.graphql
+
+  - name: reviews
+    routing_url: http://host.docker.internal:5202/graphql
+    schema:
+      file: ../../schema/samples/wire-reviews.graphql

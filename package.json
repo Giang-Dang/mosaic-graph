@@ -2,7 +2,7 @@
   "name": "mosaic-graph",
   "version": "0.0.0",
   "private": true,
-  "description": "Verification harness for the Mosaic GraphQL service. The service itself is .NET; node is here only to run the Postman collection.",
+  "description": "Verification harness for the Mosaic GraphQL service. The service itself is .NET; node is here to run the Postman collections and, since chapter 7, to compose the sample supergraph.",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=16"
@@ -12,6 +12,7 @@
     "verify:postman": "newman run postman/mosaic.postman_collection.json --environment postman/mosaic.local.postman_environment.json --bail"
   },
   "devDependencies": {
-    "newman": "6.2.2"
+    "newman": "6.2.2",
+    "wgc": "0.129.7"
   }
 }

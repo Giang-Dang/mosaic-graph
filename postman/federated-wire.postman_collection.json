@@ -1,0 +1,582 @@
+{
+	"info": {
+		"_postman_id": "0d9a5f31-6c47-4e8b-9d02-7a1f4c6b3e58",
+		"name": "Federated wire - chapter 07",
+		"description": "The two subgraphs and the router under samples/federated-wire, as chapter 7 of Federated GraphQL on .NET uses them.\n\nThis collection is not about Mosaic. Mosaic is still one service until chapter 8; these three processes exist so that the traffic between a router and a subgraph can be looked at directly.\n\nStart all three before running it:\n\n    dotnet run --project samples/federated-wire/Mosaic.Sample.Wire.Catalog\n    dotnet run --project samples/federated-wire/Mosaic.Sample.Wire.Reviews\n    npx wgc router compose -i samples/federated-wire/graph.yaml -o samples/federated-wire/supergraph.json\n    docker compose --profile wire up -d wire-router\n\nThe requests run in order and are independent: nothing here writes, so the collection can be run twice against the same processes.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Catalog, standing alone",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"no GraphQL errors\", function () {",
+							"    pm.expect(body).to.not.have.property(\"errors\");",
+							"});",
+							"",
+							"pm.test(\"three products\", function () {",
+							"    pm.expect(body.data.products).to.have.lengthOf(3);",
+							"});",
+							"",
+							"pm.test(\"the first one is the oak table\", function () {",
+							"    pm.expect(body.data.products[0].title).to.eql(\"Oak dining table\");",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  products {\n    id\n    title\n    price\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{catalogUrl}}/graphql",
+					"host": [
+						"{{catalogUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "A subgraph is a GraphQL service. Before any router exists it answers ordinary queries on its own port, and that is worth checking first: everything below assumes this works."
+			},
+			"response": []
+		},
+		{
+			"name": "What Catalog publishes",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"no GraphQL errors\", function () {",
+							"    pm.expect(body).to.not.have.property(\"errors\");",
+							"});",
+							"",
+							"const sdl = body.data._service.sdl;",
+							"",
+							"pm.test(\"Product is an entity keyed by id\", function () {",
+							"    pm.expect(sdl).to.include('type Product @key(fields: \"id\")');",
+							"});",
+							"",
+							"// HotChocolate 16.6.0 links federation v2.6, which is not the newest",
+							"// version of the specification. The chapter says why that is fine.",
+							"pm.test(\"the schema links a federation spec version\", function () {",
+							"    pm.expect(sdl).to.include(\"https://specs.apollo.dev/federation/v2.6\");",
+							"});",
+							"",
+							"pm.test(\"the subgraph offers _entities\", function () {",
+							"    pm.expect(sdl).to.include(\"_entities(representations: [_Any!]!): [_Entity]!\");",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  _service {\n    sdl\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{catalogUrl}}/graphql",
+					"host": [
+						"{{catalogUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "The field a composer reads. `wgc router compose` sends exactly this document when its input file names an introspection URL rather than a schema file."
+			},
+			"response": []
+		},
+		{
+			"name": "What Reviews publishes",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"no GraphQL errors\", function () {",
+							"    pm.expect(body).to.not.have.property(\"errors\");",
+							"});",
+							"",
+							"const sdl = body.data._service.sdl;",
+							"",
+							"pm.test(\"Reviews declares the same entity with the same key\", function () {",
+							"    pm.expect(sdl).to.include('type Product @key(fields: \"id\")');",
+							"});",
+							"",
+							"pm.test(\"and contributes exactly one field to it\", function () {",
+							"    pm.expect(sdl).to.include(\"reviews: [Review!]!\");",
+							"});",
+							"",
+							"// The whole point of the arrangement: Reviews has never heard of a",
+							"// title or a price, and composition is what puts them on one type.",
+							"pm.test(\"Reviews knows nothing about titles or prices\", function () {",
+							"    pm.expect(sdl).to.not.include(\"title\");",
+							"    pm.expect(sdl).to.not.include(\"price\");",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  _service {\n    sdl\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{reviewsUrl}}/graphql",
+					"host": [
+						"{{reviewsUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": ""
+			},
+			"response": []
+		},
+		{
+			"name": "Asking Reviews for entities",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"no GraphQL errors\", function () {",
+							"    pm.expect(body).to.not.have.property(\"errors\");",
+							"});",
+							"",
+							"const entities = body.data._entities;",
+							"",
+							"pm.test(\"one answer per representation, in order\", function () {",
+							"    pm.expect(entities).to.have.lengthOf(3);",
+							"});",
+							"",
+							"pm.test(\"every answer says what it is\", function () {",
+							"    entities.forEach(function (e) {",
+							"        pm.expect(e.__typename).to.eql(\"Product\");",
+							"    });",
+							"});",
+							"",
+							"// 2, 1 and 0. The third product has no reviews, and an empty list is",
+							"// the answer rather than a missing entry.",
+							"pm.test(\"the review counts are 2, 1 and 0\", function () {",
+							"    pm.expect(entities.map(function (e) { return e.reviews.length; })).to.eql([2, 1, 0]);",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "query($representations: [_Any!]!) {\n  _entities(representations: $representations) {\n    ... on Product {\n      __typename\n      reviews {\n        rating\n        body\n      }\n    }\n  }\n}",
+						"variables": "{\n  \"representations\": [\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"1\"\n    },\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"2\"\n    },\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"3\"\n    }\n  ]\n}"
+					}
+				},
+				"url": {
+					"raw": "{{reviewsUrl}}/graphql",
+					"host": [
+						"{{reviewsUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "This is the request the router makes, sent by hand. Three representations in one call, and the reply is positional: answer *n* belongs to representation *n*."
+			},
+			"response": []
+		},
+		{
+			"name": "A product Reviews has never heard of",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"no GraphQL errors\", function () {",
+							"    pm.expect(body).to.not.have.property(\"errors\");",
+							"});",
+							"",
+							"pm.test(\"the subgraph answers for a product that does not exist\", function () {",
+							"    pm.expect(body.data._entities).to.have.lengthOf(1);",
+							"    pm.expect(body.data._entities[0].id).to.eql(\"9\");",
+							"    pm.expect(body.data._entities[0].reviews).to.eql([]);",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "query($representations: [_Any!]!) {\n  _entities(representations: $representations) {\n    ... on Product {\n      id\n      reviews {\n        rating\n      }\n    }\n  }\n}",
+						"variables": "{\n  \"representations\": [\n    {\n      \"__typename\": \"Product\",\n      \"id\": \"9\"\n    }\n  ]\n}"
+					}
+				},
+				"url": {
+					"raw": "{{reviewsUrl}}/graphql",
+					"host": [
+						"{{reviewsUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "There is no product 9. Reviews answers anyway, because its reference resolver takes a key and builds an object from it. Catalog is the authority on which products exist; a subgraph extending an entity has no way to ask and does not try."
+			},
+			"response": []
+		},
+		{
+			"name": "A representation Reviews cannot resolve",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"// Review carries no @key, so it is not in the _Entity union and no",
+							"// reference resolver exists for it. The message says nothing useful;",
+							"// the chapter prints it because that is what you will see.",
+							"pm.test(\"an unresolvable representation is an error, not a null\", function () {",
+							"    pm.expect(body).to.have.property(\"errors\");",
+							"    pm.expect(body.errors[0].path).to.eql([\"_entities\"]);",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "query($representations: [_Any!]!) {\n  _entities(representations: $representations) {\n    __typename\n  }\n}",
+						"variables": "{\n  \"representations\": [\n    {\n      \"__typename\": \"Review\",\n      \"id\": \"r1\"\n    }\n  ]\n}"
+					}
+				},
+				"url": {
+					"raw": "{{reviewsUrl}}/graphql",
+					"host": [
+						"{{reviewsUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": ""
+			},
+			"response": []
+		},
+		{
+			"name": "The federated query",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const body = pm.response.json();",
+							"",
+							"pm.test(\"no GraphQL errors\", function () {",
+							"    pm.expect(body).to.not.have.property(\"errors\");",
+							"});",
+							"",
+							"const products = body.data.products;",
+							"",
+							"pm.test(\"three products, from one endpoint\", function () {",
+							"    pm.expect(products).to.have.lengthOf(3);",
+							"});",
+							"",
+							"pm.test(\"each one carries fields from both subgraphs\", function () {",
+							"    pm.expect(products[0].title).to.eql(\"Oak dining table\");",
+							"    pm.expect(products[0].reviews).to.have.lengthOf(2);",
+							"});",
+							"",
+							"pm.test(\"the unreviewed product comes back with an empty list\", function () {",
+							"    pm.expect(products[2].reviews).to.eql([]);",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  products {\n    title\n    price\n    reviews {\n      rating\n      body\n    }\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{routerUrl}}/graphql",
+					"host": [
+						"{{routerUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "One document, one endpoint, two services. The client cannot tell, and that is the entire promise of the arrangement."
+			},
+			"response": []
+		},
+		{
+			"name": "The plan behind it",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const plan = pm.response.json().extensions.queryPlan;",
+							"",
+							"pm.test(\"two fetches, in sequence\", function () {",
+							"    pm.expect(plan.kind).to.eql(\"Sequence\");",
+							"    pm.expect(plan.children).to.have.lengthOf(2);",
+							"});",
+							"",
+							"const first = plan.children[0].fetch;",
+							"const second = plan.children[1].fetch;",
+							"",
+							"pm.test(\"catalog first, on its own\", function () {",
+							"    pm.expect(first.subgraphName).to.eql(\"catalog\");",
+							"    pm.expect(first.kind).to.eql(\"Single\");",
+							"});",
+							"",
+							"pm.test(\"then reviews, in one batched entity call\", function () {",
+							"    pm.expect(second.subgraphName).to.eql(\"reviews\");",
+							"    pm.expect(second.kind).to.eql(\"BatchEntity\");",
+							"    pm.expect(second.dependsOnFetchIds).to.eql([first.fetchId]);",
+							"});",
+							"",
+							"// The client asked for neither. The router adds them because the",
+							"// second fetch cannot be made without a key to send.",
+							"pm.test(\"the router added __typename and id to the first fetch\", function () {",
+							"    pm.expect(first.query).to.include(\"__typename\");",
+							"    pm.expect(first.query).to.include(\"id\");",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-WG-Include-Query-Plan",
+						"value": "true"
+					},
+					{
+						"key": "X-WG-Skip-Loader",
+						"value": "true"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  products {\n    title\n    price\n    reviews {\n      rating\n      body\n    }\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{routerUrl}}/graphql",
+					"host": [
+						"{{routerUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": "X-WG-Include-Query-Plan asks the router to show its work. X-WG-Skip-Loader stops it executing the plan, so this request costs the subgraphs nothing. Both need DEV_MODE on the router."
+			},
+			"response": []
+		},
+		{
+			"name": "A plan with one fetch in it",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"responds 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"const plan = pm.response.json().extensions.queryPlan;",
+							"",
+							"pm.test(\"nothing crosses a boundary, so nothing is planned to\", function () {",
+							"    pm.expect(plan.children).to.have.lengthOf(1);",
+							"    pm.expect(plan.children[0].fetch.subgraphName).to.eql(\"catalog\");",
+							"});",
+							"",
+							"// Same root field as the request above, and this time the key is",
+							"// absent. The extra fields are not a habit; they are a dependency.",
+							"pm.test(\"and no key is fetched\", function () {",
+							"    const q = plan.children[0].fetch.query;",
+							"    pm.expect(q).to.not.include(\"__typename\");",
+							"    pm.expect(q).to.not.include(\"id\");",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-WG-Include-Query-Plan",
+						"value": "true"
+					},
+					{
+						"key": "X-WG-Skip-Loader",
+						"value": "true"
+					}
+				],
+				"body": {
+					"mode": "graphql",
+					"graphql": {
+						"query": "{\n  products {\n    title\n    price\n  }\n}",
+						"variables": "{}"
+					}
+				},
+				"url": {
+					"raw": "{{routerUrl}}/graphql",
+					"host": [
+						"{{routerUrl}}"
+					],
+					"path": [
+						"graphql"
+					]
+				},
+				"description": ""
+			},
+			"response": []
+		}
+	]
+}

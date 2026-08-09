@@ -78,6 +78,39 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  wire-router:
+    # Chapter 7's sample: the Cosmo Router in front of the two subgraphs under
+    # samples/federated-wire. It is behind a compose profile, so nothing that
+    # starts Mosaic starts this, and it is not on the mosaic network because it
+    # talks to two processes on the host rather than to anything in this file.
+    #
+    # Compose the execution config before bringing this up, or the bind mount
+    # below creates a directory where the file should be:
+    #
+    #   npx wgc router compose -i samples/federated-wire/graph.yaml \
+    #                          -o samples/federated-wire/supergraph.json
+    profiles: ["wire"]
+    image: ghcr.io/wundergraph/cosmo/router:0.337.1
+    environment:
+      # No GRAPH_API_TOKEN. The router wants one to fetch its schema from the
+      # Cosmo registry; with a static execution config there is nothing to
+      # fetch, and the documented cost of leaving it out is that the default
+      # telemetry stack stays off.
+      EXECUTION_CONFIG_FILE_PATH: "/etc/wire/supergraph.json"
+
+      # Development mode does two things chapter 7 needs: readable log output,
+      # and Advanced Request Tracing without an authentication check in front
+      # of it. Query plans are part of that, so this is not optional here.
+      DEV_MODE: "true"
+      LISTEN_ADDR: "0.0.0.0:3002"
+    volumes:
+      - ./samples/federated-wire/supergraph.json:/etc/wire/supergraph.json:ro
+    ports:
+      - "3002:3002"
+    extra_hosts:
+      # The subgraphs run on the host under `dotnet run`, not in a container.
+      - "host.docker.internal:host-gateway"
+
 networks:
   mosaic:
     name: mosaic
