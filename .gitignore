@@ -22,3 +22,7 @@ TestResults/
 # prints what is inside it, so it has to be a file a reader can open, and
 # verify.ps1 recomposes and compares. Chapter 7 prints nothing out of its one.
 samples/federated-wire/supergraph.json
+
+# Chapter 9's lab composes here, so that a reader trying things out never has
+# git status telling them they have changed the committed config.
+federation/scratch.json
