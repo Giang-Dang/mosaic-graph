@@ -19,12 +19,16 @@ public sealed class ProductPriceConfiguration : IEntityTypeConfiguration<Product
     {
         builder.HasKey(p => p.ProductId);
 
-        // Money is a complex type, not an owned entity. Both would put amount
-        // and currency in this table, and only one of them can be a
-        // constructor parameter: an owned type is an entity without a key, so
-        // it arrives as a navigation, and EF Core will not bind a navigation
-        // to a constructor parameter. A complex type is a value, so it binds
-        // like any other property and ProductPrice stays a positional record.
+        // Money is a complex type, not an owned entity. Both put amount and
+        // currency in this table; the difference is what EF Core thinks it is
+        // looking at. An owned type is an entity without a key of its own, so
+        // it is tracked and it arrives as a navigation. A complex type is a
+        // value, with no identity and no tracking, which is what Money is.
+        //
+        // Neither can be a constructor parameter. EF Core's error names only
+        // navigations, but measured against 10.0.10 a complex property is
+        // refused the same way, which is why ProductPrice carries its Amount
+        // as an init property rather than as a positional record parameter.
         builder.ComplexProperty(p => p.Amount, money =>
         {
             money.Property(m => m.Amount).HasPrecision(12, 2).IsRequired();

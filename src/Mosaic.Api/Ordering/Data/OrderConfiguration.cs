@@ -19,11 +19,17 @@ namespace Mosaic.Api.Ordering.Data;
 /// </para>
 /// <para>
 /// As a related entity, its money becomes a <em>complex property</em> instead:
-/// a value, mapped to columns on the same row, which does bind. The line has
-/// no identifier in the domain model and does not need one on the graph
-/// either, so the key and the foreign key back to the order are both shadow
-/// properties: they exist in the database and in EF Core's model, and nowhere
-/// in the C#.
+/// a value, with no identity and no tracking, mapped to columns on the same
+/// row. That does not buy back the constructor parameter, because measured
+/// against EF Core 10.0.10 a complex property will not bind to one either, so
+/// <c>OrderLine.UnitPrice</c> is an init property. What it does buy is the
+/// right model: an order line's price is a value, not a row somewhere else.
+/// </para>
+/// <para>
+/// The line has no identifier in the domain model and does not need one on the
+/// graph either, so the key and the foreign key back to the order are both
+/// shadow properties: they exist in the database and in EF Core's model, and
+/// nowhere in the C#.
 /// </para>
 /// </remarks>
 public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>

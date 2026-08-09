@@ -44,7 +44,8 @@ public sealed class MosaicDbContext(DbContextOptions<MosaicDbContext> options)
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.ApplyConfigurationsFromAssembly(typeof(MosaicDbContext).Assembly);
+        modelBuilder.ApplyConfigurationsFromAssembly(
+            typeof(MosaicDbContext).Assembly);
 
         UseSnakeCaseNames(modelBuilder);
     }
