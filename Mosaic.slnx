@@ -1,7 +1,12 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/Mosaic.Api/Mosaic.Api.csproj" />
+    <Project Path="src/Mosaic.ServiceDefaults/Mosaic.ServiceDefaults.csproj" />
     <Project Path="src/Mosaic.Catalog/Mosaic.Catalog.csproj" />
+    <Project Path="src/Mosaic.Pricing/Mosaic.Pricing.csproj" />
+    <Project Path="src/Mosaic.Inventory/Mosaic.Inventory.csproj" />
+    <Project Path="src/Mosaic.Accounts/Mosaic.Accounts.csproj" />
+    <Project Path="src/Mosaic.Reviews/Mosaic.Reviews.csproj" />
+    <Project Path="src/Mosaic.Ordering/Mosaic.Ordering.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/three-approaches/Mosaic.Sample.ImplementationFirst/Mosaic.Sample.ImplementationFirst.csproj" />

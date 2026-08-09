@@ -1,8 +1,8 @@
 # The Catalog subgraph's container image.
 #
-# The same file as src/Mosaic.Api/Dockerfile with the project name changed,
-# which is worth noticing rather than deduplicating: two services that build
-# and run the same way are two services one team can operate.
+# One of six files that differ only in a project name, which is worth noticing
+# rather than deduplicating: six services that build and run the same way are a
+# platform, and the copies are what make each team free to change theirs.
 
 # ---------------------------------------------------------------------------
 # Build stage
@@ -11,6 +11,7 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 COPY global.json Directory.Build.props Directory.Packages.props ./
+COPY src/Mosaic.ServiceDefaults/Mosaic.ServiceDefaults.csproj src/Mosaic.ServiceDefaults/
 COPY src/Mosaic.Catalog/Mosaic.Catalog.csproj src/Mosaic.Catalog/
 RUN dotnet restore src/Mosaic.Catalog/Mosaic.Catalog.csproj
 

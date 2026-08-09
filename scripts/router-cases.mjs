@@ -12,8 +12,8 @@
 // reason chapter 9's script gives: verify.ps1 and verify.sh are supposed to
 // check the same things and have drifted apart once already.
 //
-// Needs Docker, and needs both subgraphs answering on 5100 and 5101, because
-// two of the three cases are about whether the router can reach them.
+// Needs Docker, and needs the subgraphs answering on 5101 to 5106, because two
+// of the three cases are about whether the router can reach them.
 //
 // Usage:
 //   node scripts/router-cases.mjs                run every case
@@ -29,9 +29,18 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const CATALOG_SCHEMA = join(repoRoot, 'schema', 'catalog.graphql');
-const MOSAIC_SCHEMA = join(repoRoot, 'schema', 'mosaic.graphql');
 const SUPERGRAPH = join(repoRoot, 'federation', 'supergraph.json');
+
+// The six subgraphs and the port each answers on, in the order
+// federation/mosaic.yaml lists them. Two until chapter 12.
+const SUBGRAPHS = [
+  { name: 'catalog', port: 5101 },
+  { name: 'pricing', port: 5102 },
+  { name: 'inventory', port: 5103 },
+  { name: 'accounts', port: 5104 },
+  { name: 'reviews', port: 5105 },
+  { name: 'ordering', port: 5106 },
+];
 
 // The image docker-compose.yml pins. Kept in step with it by hand; a mismatch
 // would mean the gate checks a router nobody runs.
@@ -286,35 +295,41 @@ async function withContext(fn) {
       };
     },
 
-    // Chapter 9's unsatisfiable pair, composed with the flag that lets it
+    // Chapter 9's unsatisfiable edit, composed with the flag that lets it
     // through. The edit has to match exactly once, for the reason
     // composition-cases.mjs gives: a case that silently edits nothing composes
-    // the healthy pair and asserts something else entirely.
+    // the healthy set and asserts something else entirely.
+    //
+    // The edit was made to "mosaic" until chapter 12 and is made to "pricing"
+    // now, because that is the subgraph that inherited Product.price.
     composeUnsatisfiable() {
       const from = 'type Product @key(fields: "id") {';
       const to = 'type Product @key(fields: "id", resolvable: false) {';
-      const mosaic = readFileSync(MOSAIC_SCHEMA, 'utf8');
-      const hits = mosaic.split(from).length - 1;
+      const pricing = readFileSync(join(repoRoot, 'schema', 'pricing.graphql'), 'utf8');
+      const hits = pricing.split(from).length - 1;
       if (hits !== 1) {
         throw new Error(
-          `the edit to mosaic matched ${hits} times, expected exactly 1.\n` +
+          `the edit to pricing matched ${hits} times, expected exactly 1.\n` +
             `The text it looks for is:\n${from}\n` +
             'The committed schema has changed under this case. Fix the case rather than the schema.',
         );
       }
-      writeFileSync(join(dir, 'broken-mosaic.graphql'), mosaic.replace(from, to));
-      copyFileSync(CATALOG_SCHEMA, join(dir, 'broken-catalog.graphql'));
+      for (const subgraph of SUBGRAPHS) {
+        const source = readFileSync(join(repoRoot, 'schema', `${subgraph.name}.graphql`), 'utf8');
+        writeFileSync(
+          join(dir, `broken-${subgraph.name}.graphql`),
+          subgraph.name === 'pricing' ? source.replace(from, to) : source,
+        );
+      }
       writeFileSync(join(dir, 'broken-graph.yaml'), [
         'version: 1',
         'subgraphs:',
-        '  - name: catalog',
-        '    routing_url: http://localhost:5101/graphql',
-        '    schema:',
-        '      file: broken-catalog.graphql',
-        '  - name: mosaic',
-        '    routing_url: http://localhost:5100/graphql',
-        '    schema:',
-        '      file: broken-mosaic.graphql',
+        ...SUBGRAPHS.flatMap((s) => [
+          `  - name: ${s.name}`,
+          `    routing_url: http://localhost:${s.port}/graphql`,
+          '    schema:',
+          `      file: broken-${s.name}.graphql`,
+        ]),
         '',
       ].join('\n'));
 

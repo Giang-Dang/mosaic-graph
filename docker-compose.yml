@@ -1,9 +1,20 @@
 # This file is the spine. Later chapters attach subgraphs and a router to it,
 # and every one of them shows up here as another service on the mosaic network.
 # Chapter 4 attached the first of those: a database. Chapter 8 attached the
-# second, and it is the one that changes what Mosaic is: the half of it that
-# owns products now runs as mosaic-catalog, beside mosaic-api rather than
+# second, and it is the one that changed what Mosaic is: the half of it that
+# owns products moved out into mosaic-catalog, beside mosaic-api rather than
 # inside it.
+#
+# Chapter 12 finished the job and mosaic-api is not in this file any more. The
+# five domains it still ran are five services now, on 5102 to 5106, and every
+# one of them is the same nine lines with a name and a port changed. That
+# sameness is the point rather than an accident: the differences between these
+# services are in their schemas, and a difference in how they start is a
+# difference somebody has to remember at three in the morning.
+#
+# The database container did not change. Six services share one PostgreSQL
+# server and none of them shares a database with another, which is a deployment
+# convenience on one side of a line and the whole extraction on the other.
 
 services:
   mosaic-db:
@@ -38,52 +49,11 @@ services:
       - mosaic
     restart: unless-stopped
 
-  mosaic-api:
-    build:
-      context: .
-      dockerfile: src/Mosaic.Api/Dockerfile
-    image: mosaic-api:dev
-    depends_on:
-      mosaic-db:
-        condition: service_healthy
-    environment:
-      # HotChocolate 16 serves introspection only in Development. The Postman
-      # collection for this chapter reads the schema by introspecting it, so
-      # the container has to run in Development for that to work.
-      #
-      # This is a development baseline, not a production posture. A deployed
-      # Mosaic would set Production here and leave introspection closed, which
-      # is the default precisely because an open schema is a map of your API
-      # for anyone who asks.
-      ASPNETCORE_ENVIRONMENT: Development
-
-      # The one setting that differs between the two ways of running Mosaic.
-      # appsettings.json says localhost, which is right for `dotnet run`;
-      # inside the network the database answers to its service name.
-      ConnectionStrings__Mosaic: "Host=mosaic-db;Port=5432;Database=mosaic;Username=mosaic;Password=mosaic"
-    ports:
-      # Host 5100 to container 8080, so http://localhost:5100/graphql is the
-      # URL either way: `dotnet run` (which binds 5100 directly) or this file.
-      - "5100:8080"
-    networks:
-      - mosaic
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      # HotChocolate 16 builds the whole schema during startup, so a schema
-      # error kills the container at boot instead of waiting for the first
-      # query. Since chapter 4 the seeder runs there too. That work happens
-      # before /health answers, and start_period covers it: failures inside the
-      # window do not count against the container.
-      start_period: 30s
-    restart: unless-stopped
-
   mosaic-catalog:
-    # Chapter 8's extraction. Deliberately the same shape as mosaic-api above,
-    # down to the healthcheck: two services that start, answer and fail the
-    # same way are two services one team can operate.
+    # Chapter 8's extraction, and the shape the other five copied. Deliberately
+    # identical from here down to the healthcheck: six services that start,
+    # answer and fail the same way are a platform, and the copies are what let
+    # one team change theirs without asking the other five.
     build:
       context: .
       dockerfile: src/Mosaic.Catalog/Dockerfile
@@ -92,22 +62,22 @@ services:
       mosaic-db:
         condition: service_healthy
     environment:
-      # Development for the same reason mosaic-api runs in it: HotChocolate 16
-      # serves introspection in no other environment, and a subgraph nothing can
-      # introspect is a subgraph no tool can be pointed at. A development
-      # baseline, not a production posture.
+      # Development because HotChocolate 16 serves introspection in no other
+      # environment, and a subgraph nothing can introspect is a subgraph no tool
+      # can be pointed at. A development baseline, not a production posture, and
+      # all six say so.
       ASPNETCORE_ENVIRONMENT: Development
 
-      # Catalog's own database, on the server the two services share. A
-      # database of its own rather than another schema inside mosaic: after
-      # this chapter the two services own their data separately, and a join
-      # across that seam should not be one connection string away. The
-      # credentials are still the shared development ones, which is a
-      # convenience here and would be a finding anywhere else.
+      # Catalog's own database, on the server the six services share. A database
+      # of its own rather than another schema inside one: the six services own
+      # their data separately, and a join across any of those seams should not
+      # be one connection string away. The credentials are still the shared
+      # development ones, which is a convenience here and would be a finding
+      # anywhere else.
       #
-      # Nothing in this file creates the database. EF Core's
-      # EnsureCreatedAsync does, on Catalog's first start, which is why chapter
-      # 8 added a service here and no storage.
+      # Nothing in this file creates the database. EF Core's EnsureCreatedAsync
+      # does, on first start, which is why chapters 8 and 12 between them added
+      # six services here and no storage.
       ConnectionStrings__Catalog: "Host=mosaic-db;Port=5432;Database=catalog;Username=mosaic;Password=mosaic"
     ports:
       # Host 5101 to container 8080, matching the launch profile and the
@@ -121,17 +91,141 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
-      # Schema build and seeding happen before /health answers here too, and
-      # the seeder has more to do on a cold start than mosaic-api's: it creates
-      # the database before it fills it.
+      # HotChocolate 16 builds the whole schema during startup, so a schema
+      # error kills the container at boot instead of waiting for the first
+      # query, and the seeder creates the database before it fills it. All of
+      # that happens before /health answers, and start_period covers it:
+      # failures inside the window do not count against the container.
+      start_period: 30s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Chapter 12's five. Everything below repeats the block above with a name, a
+  # port and a database changed.
+  # -------------------------------------------------------------------------
+
+  mosaic-pricing:
+    build:
+      context: .
+      dockerfile: src/Mosaic.Pricing/Dockerfile
+    image: mosaic-pricing:dev
+    depends_on:
+      mosaic-db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Pricing: "Host=mosaic-db;Port=5432;Database=pricing;Username=mosaic;Password=mosaic"
+    ports:
+      - "5102:8080"
+    networks:
+      - mosaic
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  mosaic-inventory:
+    build:
+      context: .
+      dockerfile: src/Mosaic.Inventory/Dockerfile
+    image: mosaic-inventory:dev
+    depends_on:
+      mosaic-db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Inventory: "Host=mosaic-db;Port=5432;Database=inventory;Username=mosaic;Password=mosaic"
+    ports:
+      - "5103:8080"
+    networks:
+      - mosaic
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  mosaic-accounts:
+    build:
+      context: .
+      dockerfile: src/Mosaic.Accounts/Dockerfile
+    image: mosaic-accounts:dev
+    depends_on:
+      mosaic-db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Accounts: "Host=mosaic-db;Port=5432;Database=accounts;Username=mosaic;Password=mosaic"
+    ports:
+      - "5104:8080"
+    networks:
+      - mosaic
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  mosaic-reviews:
+    build:
+      context: .
+      dockerfile: src/Mosaic.Reviews/Dockerfile
+    image: mosaic-reviews:dev
+    depends_on:
+      mosaic-db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Reviews: "Host=mosaic-db;Port=5432;Database=reviews;Username=mosaic;Password=mosaic"
+    ports:
+      - "5105:8080"
+    networks:
+      - mosaic
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  mosaic-ordering:
+    build:
+      context: .
+      dockerfile: src/Mosaic.Ordering/Dockerfile
+    image: mosaic-ordering:dev
+    depends_on:
+      mosaic-db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Ordering: "Host=mosaic-db;Port=5432;Database=ordering;Username=mosaic;Password=mosaic"
+    ports:
+      - "5106:8080"
+    networks:
+      - mosaic
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
       start_period: 30s
     restart: unless-stopped
 
   mosaic-router:
-    # Chapter 10. The Cosmo Router, in front of the two subgraphs above,
-    # serving the whole graph on 3002. It is the first part of Mosaic that is
+    # Chapter 10. The Cosmo Router, in front of the six subgraphs above,
+    # serving the whole graph on 3002. It is the only part of Mosaic that is
     # configured rather than written, and everything it knows about the graph
-    # is in the two files mounted below.
+    # is in the two files mounted below. Note what did not change in chapter 12:
+    # this block. The router went from two subgraphs to six by being handed a
+    # different execution config.
     #
     # No depends_on. The router reads its execution config from disk and
     # contacts no subgraph at startup, so there is nothing here for it to wait
@@ -164,15 +258,15 @@ services:
       # to be up together. Start both and the second one fails to bind.
       - "3002:3002"
     extra_hosts:
-      # federation/supergraph.json routes to http://localhost:5100/graphql and
-      # http://localhost:5101/graphql, which are the URLs a subgraph answers on
-      # the host. Inside a container localhost is the container, so the router
-      # rewrites those to host.docker.internal on its own: the setting is
-      # localhost_fallback_inside_docker and it defaults to true. This line is
-      # what makes that name resolve.
+      # federation/supergraph.json routes to http://localhost:5101/graphql
+      # through http://localhost:5106/graphql, which are the URLs the six
+      # subgraphs answer on the host. Inside a container localhost is the
+      # container, so the router rewrites those to host.docker.internal on its
+      # own: the setting is localhost_fallback_inside_docker and it defaults to
+      # true. This line is what makes that name resolve.
       #
       # It means the router leaves the machine and comes back in through the
-      # published port even when all three services are containers here. That
+      # published port even when all seven services are containers here. That
       # is a development convenience: it keeps one composed config working
       # whether the subgraphs were started with `dotnet run` or by this file.
       # A deployment would point the router at the services directly with

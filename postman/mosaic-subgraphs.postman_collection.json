@@ -1,0 +1,660 @@
+{
+  "info": {
+    "name": "Mosaic subgraphs - chapter 12",
+    "description": "Mosaic's six subgraphs, one at a time, as chapter 12 of Federated GraphQL on .NET leaves them. It replaces postman/mosaic-federation.postman_collection.json, which asked port 5100 for most of what it wanted and cannot work here: there is no port 5100. That is the second time a collection in this repository has been deleted rather than patched, and the reason is the same both times - a collection whose requests point at a service that no longer exists is not a collection with a few broken requests in it.\n\nThere is no router in here, which is the same argument chapter 8 made and chapter 12 makes five more times: a subgraph you cannot test on its own is a subgraph you will end up debugging through a router. postman/mosaic-router.postman_collection.json is the other half and asks the graph.\n\nStart the database and the six services first:\n\n    docker compose up -d --build mosaic-db mosaic-catalog mosaic-pricing mosaic-inventory mosaic-accounts mosaic-reviews mosaic-ordering\n\nSix databases on one server now - catalog, pricing, inventory, accounts, reviews and ordering - and no service can read another's tables. That is what the _entities requests are really testing: the only thing crossing any of those gaps is a key.\n\nOrder is load-bearing. Product keys come out of Catalog and customer keys come out of Reviews, because a key is an opaque node id and nobody can type one by hand; and the mutation at the bottom writes, so every assertion about a seeded count sits above it. The run expects a freshly seeded set of databases.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Catalog owns the products",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "",
+              "pm.test('no errors', () => pm.expect(body.errors).to.be.undefined);",
+              "",
+              "const products = body.data.products;",
+              "pm.test('twenty-five products, the same twenty-five as chapter 2', () =>",
+              "  pm.expect(products).to.have.lengthOf(25));",
+              "",
+              "pm.test('every product carries a base64 node id, not a Guid', () => {",
+              "  for (const product of products) {",
+              "    pm.expect(product.id, product.title).to.not.match(/^[0-9a-f]{8}-/);",
+              "  }",
+              "});",
+              "",
+              "// Every other subgraph in this collection is handed these keys.",
+              "// Collected here rather than rebuilt, because re-encoding one would",
+              "// test this collection's idea of the format rather than the six",
+              "// services' agreement about it.",
+              "pm.collectionVariables.set('productKeys', JSON.stringify(products.map((p) => p.id)));",
+              "pm.collectionVariables.set('firstProductTitle', products[0].title);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"{ products { id title sku category } }\"}"
+        },
+        "url": { "raw": "{{catalogUrl}}/graphql", "host": ["{{catalogUrl}}"], "path": ["graphql"] },
+        "description": "The one root field that still lists the catalogue, deprecated since chapter 4 in favour of browseProducts and kept because two chapters of measurements ride on it."
+      }
+    },
+    {
+      "name": "Catalog answers for a page of keys",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const keys = JSON.parse(pm.collectionVariables.get('productKeys'));",
+              "pm.variables.set('representations', JSON.stringify(",
+              "  keys.map((id) => ({ __typename: 'Product', id }))));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('no errors', () => pm.expect(body.errors).to.be.undefined);",
+              "",
+              "const entities = body.data._entities;",
+              "pm.test('one answer per representation', () => pm.expect(entities).to.have.lengthOf(25));",
+              "",
+              "pm.test('the answer is positional', () =>",
+              "  pm.expect(entities[0].title).to.eql(pm.collectionVariables.get('firstProductTitle')));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Product { title sku } } }\",\"variables\":{\"representations\":{{representations}}}}"
+        },
+        "url": { "raw": "{{catalogUrl}}/graphql", "host": ["{{catalogUrl}}"], "path": ["graphql"] },
+        "description": "The call a router makes. Nothing in the response says which representation an entity belongs to, so an out-of-order reply is a silently wrong one."
+      }
+    },
+    {
+      "name": "Pricing prices the same keys",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const keys = JSON.parse(pm.collectionVariables.get('productKeys'));",
+              "pm.variables.set('representations', JSON.stringify(",
+              "  keys.map((id) => ({ __typename: 'Product', id }))));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('no errors', () => pm.expect(body.errors).to.be.undefined);",
+              "",
+              "const entities = body.data._entities;",
+              "pm.test('every product Catalog knows about has a price', () => {",
+              "  pm.expect(entities).to.have.lengthOf(25);",
+              "  for (const entity of entities) {",
+              "    pm.expect(entity.price.amount).to.be.a('number');",
+              "    pm.expect(entity.price.currency).to.eql('EUR');",
+              "  }",
+              "});",
+              "",
+              "// Four services carry their own copy of ProductKey.TryDecode. This",
+              "// is the assertion that catches one of them drifting from the",
+              "// others, and there is nothing at compile time that would.",
+              "pm.test('Pricing decodes the key Catalog encoded', () =>",
+              "  pm.expect(entities.filter((e) => e === null)).to.have.lengthOf(0));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Product { price { amount currency } } } }\",\"variables\":{\"representations\":{{representations}}}}"
+        },
+        "url": { "raw": "{{pricingUrl}}/graphql", "host": ["{{pricingUrl}}"], "path": ["graphql"] }
+      }
+    },
+    {
+      "name": "Pricing refuses to guess a shipping cost",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const keys = JSON.parse(pm.collectionVariables.get('productKeys'));",
+              "pm.variables.set('representations', JSON.stringify(",
+              "  [{ __typename: 'Product', id: keys[0] }]));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "",
+              "// The router always sends the category, because @requires says so.",
+              "// Nothing stops anything else from not sending it, and what a",
+              "// subgraph does then is a decision rather than a default.",
+              "pm.test('a representation with no category produces an error', () =>",
+              "  pm.expect(body.errors, JSON.stringify(body)).to.be.an('array').with.lengthOf.at.least(1));",
+              "",
+              "pm.test('the error is scoped to the entity that failed', () =>",
+              "  pm.expect(body.errors[0].path.join('.')).to.eql('_entities.0.shippingCost'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Product { shippingCost { amount } } } }\",\"variables\":{\"representations\":{{representations}}}}"
+        },
+        "url": { "raw": "{{pricingUrl}}/graphql", "host": ["{{pricingUrl}}"], "path": ["graphql"] },
+        "description": "Chapter 11 measured this against the monolith. The field moved to Pricing in chapter 12 and behaves the same way, which is worth checking rather than assuming: the resolver moved with its domain and its throw came with it."
+      }
+    },
+    {
+      "name": "Inventory counts the same keys",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const keys = JSON.parse(pm.collectionVariables.get('productKeys'));",
+              "pm.variables.set('representations', JSON.stringify(",
+              "  keys.map((id) => ({ __typename: 'Product', id }))));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('no errors', () => pm.expect(body.errors).to.be.undefined);",
+              "",
+              "const entities = body.data._entities;",
+              "pm.test('every product has a stock level', () => {",
+              "  pm.expect(entities).to.have.lengthOf(25);",
+              "  for (const entity of entities) {",
+              "    pm.expect(entity.availableQuantity).to.be.a('number').and.to.be.at.least(0);",
+              "  }",
+              "});",
+              "",
+              "// availableQuantity is the one contributed field chapter 12 left",
+              "// non-nullable, and this is why: a product Inventory has never",
+              "// counted reads as zero rather than as an absence.",
+              "pm.test('at least one product is out of stock', () =>",
+              "  pm.expect(entities.filter((e) => e.availableQuantity === 0).length).to.be.at.least(1));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Product { availableQuantity } } }\",\"variables\":{\"representations\":{{representations}}}}"
+        },
+        "url": { "raw": "{{inventoryUrl}}/graphql", "host": ["{{inventoryUrl}}"], "path": ["graphql"] }
+      }
+    },
+    {
+      "name": "Reviews hands back author keys and resolves no customer",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const keys = JSON.parse(pm.collectionVariables.get('productKeys'));",
+              "pm.variables.set('representations', JSON.stringify(",
+              "  keys.map((id) => ({ __typename: 'Product', id }))));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('no errors', () => pm.expect(body.errors).to.be.undefined);",
+              "",
+              "const entities = body.data._entities;",
+              "const reviews = entities.flatMap((e) => e.reviews.nodes);",
+              "pm.test('a hundred and twenty reviews, the number chapter 2 measured', () =>",
+              "  pm.expect(reviews).to.have.lengthOf(120));",
+              "",
+              "// The author is a key in a wrapper since chapter 12. Reviews cannot",
+              "// tell you the name and does not try.",
+              "const authors = [...new Set(reviews.map((r) => r.author.id))];",
+              "pm.test('twelve distinct authors behind them', () =>",
+              "  pm.expect(authors).to.have.lengthOf(12));",
+              "",
+              "pm.test('every author key is a Customer node id', () => {",
+              "  for (const id of authors) {",
+              "    pm.expect(Buffer.from(id, 'base64').toString('utf8')).to.match(/^Customer:/);",
+              "  }",
+              "});",
+              "",
+              "pm.collectionVariables.set('customerKeys', JSON.stringify(authors));",
+              "",
+              "// The mutations at the bottom write, so they need products nothing",
+              "// above has counted. Found rather than hard-coded: the answer is",
+              "// positional, so an entity with no reviews is a product with none.",
+              "const keys = JSON.parse(pm.collectionVariables.get('productKeys'));",
+              "const unreviewed = keys.filter((_, i) => entities[i].reviews.nodes.length === 0);",
+              "pm.test('at least two products nobody has reviewed, for the writes below', () =>",
+              "  pm.expect(unreviewed.length).to.be.at.least(2));",
+              "pm.collectionVariables.set('unreviewedKeys', JSON.stringify(unreviewed));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Product { reviews(first: 12) { nodes { rating author { id } } } } } }\",\"variables\":{\"representations\":{{representations}}}}"
+        },
+        "url": { "raw": "{{reviewsUrl}}/graphql", "host": ["{{reviewsUrl}}"], "path": ["graphql"] },
+        "description": "first: 12 is not arbitrary: the most reviewed product has exactly twelve, so this asks for every review in the seed data."
+      }
+    },
+    {
+      "name": "Reviews cannot name an author",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('no errors', () => pm.expect(body.errors).to.be.undefined);",
+              "",
+              "// displayName and email were fields this service could answer for",
+              "// ten chapters, because Accounts was a folder in the same process.",
+              "const fields = body.data.__type.fields.map((f) => f.name);",
+              "pm.test('Customer has exactly one field here, and it is the key', () =>",
+              "  pm.expect(fields).to.eql(['id']));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"{ __type(name: \\\"Customer\\\") { fields { name } } }\"}"
+        },
+        "url": { "raw": "{{reviewsUrl}}/graphql", "host": ["{{reviewsUrl}}"], "path": ["graphql"] },
+        "description": "Introspecting the Customer type Reviews declares: one field, and it is the key. Everything else about a customer belongs to Accounts and the router fetches it from there."
+      }
+    },
+    {
+      "name": "Accounts resolves the keys Reviews handed out",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const keys = JSON.parse(pm.collectionVariables.get('customerKeys'));",
+              "pm.variables.set('representations', JSON.stringify(",
+              "  keys.map((id) => ({ __typename: 'Customer', id }))));",
+              "pm.collectionVariables.set('oneCustomerKey', keys[0]);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('no errors', () => pm.expect(body.errors).to.be.undefined);",
+              "",
+              "const entities = body.data._entities;",
+              "pm.test('twelve customers, all of them found', () => {",
+              "  pm.expect(entities).to.have.lengthOf(12);",
+              "  for (const entity of entities) {",
+              "    pm.expect(entity, JSON.stringify(entity)).to.not.be.null;",
+              "    pm.expect(entity.displayName).to.be.a('string').and.to.have.length.above(0);",
+              "  }",
+              "});",
+              "",
+              "// This is the whole of what chapter 12 moved: a DataLoader call",
+              "// inside one process became an _entities call across a network, and",
+              "// the only thing that crossed was a base64 string.",
+              "pm.test('Accounts decodes the key Reviews stored', () =>",
+              "  pm.expect(entities.filter((e) => e === null)).to.have.lengthOf(0));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Customer { id displayName email } } }\",\"variables\":{\"representations\":{{representations}}}}"
+        },
+        "url": { "raw": "{{accountsUrl}}/graphql", "host": ["{{accountsUrl}}"], "path": ["graphql"] }
+      }
+    },
+    {
+      "name": "An undecodable customer key is a null, not an error",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "",
+              "pm.test('no errors array', () => pm.expect(body.errors).to.be.undefined);",
+              "pm.test('exactly one null entity', () => {",
+              "  pm.expect(body.data._entities).to.have.lengthOf(1);",
+              "  pm.expect(body.data._entities[0]).to.be.null;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Customer { displayName } } }\",\"variables\":{\"representations\":[{\"__typename\":\"Customer\",\"id\":\"not-a-key\"}]}}"
+        },
+        "url": { "raw": "{{accountsUrl}}/graphql", "host": ["{{accountsUrl}}"], "path": ["graphql"] },
+        "description": "Returning null is a subgraph saying \"not mine\", which the specification treats as an ordinary answer. Throwing would turn one mangled identifier into a failed batch."
+      }
+    },
+    {
+      "name": "Ordering hands out two keys it cannot resolve",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const keys = JSON.parse(pm.collectionVariables.get('customerKeys'));",
+              "pm.collectionVariables.set('orderCustomerKeys', JSON.stringify(keys));",
+              "pm.variables.set('customerId', keys[0]);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('no errors', () => pm.expect(body.errors).to.be.undefined);",
+              "",
+              "// Seven of the twelve seeded customers have no orders, so an empty",
+              "// list here is data rather than a failure. What has to hold is the",
+              "// shape of whatever did come back.",
+              "const orders = body.data.ordersByCustomer;",
+              "pm.test('the field answers a list', () => pm.expect(orders).to.be.an('array'));",
+              "",
+              "for (const order of orders) {",
+              "  pm.test('the order knows what it cost', () =>",
+              "    pm.expect(order.total.amount).to.be.a('number').and.to.be.above(0));",
+              "  pm.test('the order has lines, which chapter 8 found it did not', () =>",
+              "    pm.expect(order.lines.length).to.be.at.least(1));",
+              "  for (const line of order.lines) {",
+              "    pm.test('a line points at a product with a key and nothing else', () =>",
+              "      pm.expect(Buffer.from(line.product.id, 'base64').toString('utf8')).to.match(/^Product:/));",
+              "  }",
+              "  pm.test('the customer is a key too', () =>",
+              "    pm.expect(order.customer.id).to.eql(pm.variables.get('customerId')));",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($customerId: ID!) { ordersByCustomer(customerId: $customerId) { total { amount currency } customer { id } lines { quantity unitPrice { amount } product { id } } } }\",\"variables\":{\"customerId\":\"{{customerId}}\"}}"
+        },
+        "url": { "raw": "{{orderingUrl}}/graphql", "host": ["{{orderingUrl}}"], "path": ["graphql"] },
+        "description": "Order.total is computed from the lines Ordering owns, so it costs no other service anything. Order.customer and OrderLine.product are keys in wrappers, and both fields are nullable since chapter 12 because neither can be checked from here."
+      }
+    },
+    {
+      "name": "Ordering declares a Product it cannot answer for",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('no errors', () => pm.expect(body.errors).to.be.undefined);",
+              "",
+              "const sdl = body.data._service.sdl;",
+              "pm.test('Product is keyed and not resolvable here', () =>",
+              "  pm.expect(sdl).to.include('type Product @key(fields: \"id\", resolvable: false)'));",
+              "pm.test('Customer is keyed and not resolvable here either', () =>",
+              "  pm.expect(sdl).to.include('type Customer @key(fields: \"id\", resolvable: false)'));",
+              "",
+              "// The difference between participating in an entity and merely",
+              "// referencing one. Without the flag this service would be promising",
+              "// the router something it cannot do.",
+              "pm.test('and so there is no _Entity union member for either', () =>",
+              "  pm.expect(sdl).to.not.match(/union _Entity =/));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"{ _service { sdl } }\"}"
+        },
+        "url": { "raw": "{{orderingUrl}}/graphql", "host": ["{{orderingUrl}}"], "path": ["graphql"] }
+      }
+    },
+    {
+      "name": "The mutation lost its second check",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const unreviewed = JSON.parse(pm.collectionVariables.get('unreviewedKeys'));",
+              "const customers = JSON.parse(pm.collectionVariables.get('customerKeys'));",
+              "// A product nobody has reviewed, so this write does not disturb a",
+              "// count anything above asserts.",
+              "pm.variables.set('productId', unreviewed[0]);",
+              "pm.collectionVariables.set('writtenProductId', unreviewed[0]);",
+              "pm.variables.set('customerId', customers[0]);",
+              "pm.collectionVariables.set('writtenCustomerId', customers[0]);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('no errors', () => pm.expect(body.errors).to.be.undefined);",
+              "",
+              "const payload = body.data.submitReview;",
+              "pm.test('the review was written', () => {",
+              "  pm.expect(payload.errors).to.be.null;",
+              "  pm.expect(payload.review.rating).to.eql(5);",
+              "});",
+              "",
+              "// Reviews stores the author key and cannot check it. What used to be",
+              "// CustomerNotFoundError at write time is a null author at read time,",
+              "// one service away.",
+              "pm.test('the author comes back as a key and nothing else', () =>",
+              "  pm.expect(payload.review.author.id).to.eql(pm.variables.get('customerId')));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"mutation($input: SubmitReviewInput!) { submitReview(input: $input) { review { id rating author { id } } errors { __typename ... on Error { message code } } } }\",\"variables\":{\"input\":{\"productId\":\"{{productId}}\",\"customerId\":\"{{customerId}}\",\"rating\":5,\"body\":\"Solid.\"}}}"
+        },
+        "url": { "raw": "{{reviewsUrl}}/graphql", "host": ["{{reviewsUrl}}"], "path": ["graphql"] }
+      }
+    },
+    {
+      "name": "A customer who does not exist is now accepted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const unreviewed = JSON.parse(pm.collectionVariables.get('unreviewedKeys'));",
+              "pm.variables.set('productId', unreviewed[1]);",
+              "// A syntactically valid Customer node id for a customer nobody has",
+              "// ever seeded. Built rather than fetched, which is the point.",
+              "pm.variables.set('customerId', Buffer.from(",
+              "  'Customer:\\u0000\\u0000\\u0000\\u00c0\\u0000\\u0000\\u0000@\\u0080\\u0000\\u0000\\u0000\\u0000\\u0000\\u0000\\u00ff', 'binary').toString('base64'));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "const payload = body.data.submitReview;",
+              "",
+              "// Chapter 8 took ProductNotFoundError away and chapter 12 took",
+              "// CustomerNotFoundError. This is what that cost, stated as an",
+              "// assertion rather than as a paragraph: the write succeeds.",
+              "pm.test('the review is written against a customer nobody has', () => {",
+              "  pm.expect(body.errors, JSON.stringify(body)).to.be.undefined;",
+              "  pm.expect(payload.errors).to.be.null;",
+              "  pm.expect(payload.review.id).to.be.a('string');",
+              "});",
+              "",
+              "pm.test('and the payload can no longer report the problem at all', () =>",
+              "  pm.expect(JSON.stringify(payload)).to.not.include('CUSTOMER_NOT_FOUND'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"mutation($input: SubmitReviewInput!) { submitReview(input: $input) { review { id } errors { __typename ... on Error { message code } } } }\",\"variables\":{\"input\":{\"productId\":\"{{productId}}\",\"customerId\":\"{{customerId}}\",\"rating\":4,\"body\":\"Written by nobody.\"}}}"
+        },
+        "url": { "raw": "{{reviewsUrl}}/graphql", "host": ["{{reviewsUrl}}"], "path": ["graphql"] }
+      }
+    },
+    {
+      "name": "The rules Reviews still owns",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The same product and the same customer as two requests ago.",
+              "pm.variables.set('productId', pm.collectionVariables.get('writtenProductId'));",
+              "pm.variables.set('customerId', pm.collectionVariables.get('writtenCustomerId'));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const payload = pm.response.json().data.submitReview;",
+              "",
+              "// The same customer and the same product as two requests ago. A rule",
+              "// about this domain's own rows survives the split, which is the",
+              "// other half of the argument: what Reviews lost is the checks that",
+              "// were never its to make.",
+              "pm.test('a second review from the same customer is refused', () => {",
+              "  pm.expect(payload.review).to.be.null;",
+              "  pm.expect(payload.errors).to.have.lengthOf(1);",
+              "  pm.expect(payload.errors[0].code).to.eql('DUPLICATE_REVIEW');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"mutation($input: SubmitReviewInput!) { submitReview(input: $input) { review { id } errors { __typename ... on Error { message code } } } }\",\"variables\":{\"input\":{\"productId\":\"{{productId}}\",\"customerId\":\"{{customerId}}\",\"rating\":3,\"body\":\"Again.\"}}}"
+        },
+        "url": { "raw": "{{reviewsUrl}}/graphql", "host": ["{{reviewsUrl}}"], "path": ["graphql"] }
+      }
+    }
+  ],
+  "variable": [
+    { "key": "productKeys", "value": "[]" },
+    { "key": "customerKeys", "value": "[]" },
+    { "key": "unreviewedKeys", "value": "[]" },
+    { "key": "orderCustomerKeys", "value": "[]" },
+    { "key": "firstProductTitle", "value": "" },
+    { "key": "oneCustomerKey", "value": "" },
+    { "key": "writtenProductId", "value": "" },
+    { "key": "writtenCustomerId", "value": "" }
+  ]
+}

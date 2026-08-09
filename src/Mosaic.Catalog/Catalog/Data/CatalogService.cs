@@ -1,6 +1,7 @@
 using GreenDonut.Data;
 using Microsoft.EntityFrameworkCore;
 using Mosaic.Catalog.Model;
+using Mosaic.ServiceDefaults.Counting;
 
 namespace Mosaic.Catalog.Data;
 
@@ -9,13 +10,19 @@ namespace Mosaic.Catalog.Data;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This class arrived in chapter 8 by being moved, not rewritten. Two things
-/// changed on the way out of Mosaic and both are visible in the constructor:
-/// the context is Catalog's own rather than the shared one, and the
-/// <c>ServiceCallCounter</c> is gone. That counter was the monolith's
-/// instrumentation, added in chapter 3 to count what one process was doing to
-/// itself, and a service that answers one domain's questions has nothing to
-/// count with it. Chapter 23 gives both services something better.
+/// This class arrived in chapter 8 by being moved, not rewritten. One thing
+/// changed on the way out of Mosaic and it is visible in the constructor: the
+/// context is Catalog's own rather than the shared one.
+/// </para>
+/// <para>
+/// The <c>ServiceCallCounter</c> left in chapter 8 and came back in chapter 12,
+/// which is worth stating rather than quietly reverting. Chapter 8's argument
+/// was that the counter was the monolith's instrumentation and that a service
+/// answering one domain's questions has nothing to count with it. That was true
+/// of two services and false of six: a graph where one process reports its
+/// costs and five do not is a graph in which every question about cost is
+/// answered with "somewhere else". All six count now, and the counting lives in
+/// <c>Mosaic.ServiceDefaults</c> so that the six answers mean the same thing.
 /// </para>
 /// <para>
 /// Everything is read <c>AsNoTracking</c>. Nothing here writes, and the change
@@ -28,28 +35,40 @@ namespace Mosaic.Catalog.Data;
 /// the key reproduces the order the earlier chapters printed.
 /// </para>
 /// </remarks>
-public sealed class CatalogService(CatalogDbContext db)
+public sealed class CatalogService(CatalogDbContext db, ServiceCallCounter counter)
 {
     public async Task<IReadOnlyList<Product>> GetProductsAsync(
         CancellationToken cancellationToken)
-        => await db.Products
+    {
+        counter.RecordLookup();
+
+        return await db.Products
             .AsNoTracking()
             .OrderBy(p => p.Id)
             .ToListAsync(cancellationToken);
+    }
 
     public async Task<Product?> GetProductByIdAsync(
         Guid id,
         CancellationToken cancellationToken)
-        => await db.Products
+    {
+        counter.RecordLookup();
+
+        return await db.Products
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+    }
 
     public async Task<Product?> GetProductBySkuAsync(
         string sku,
         CancellationToken cancellationToken)
-        => await db.Products
+    {
+        counter.RecordLookup();
+
+        return await db.Products
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.Sku == sku, cancellationToken);
+    }
 
     /// <summary>
     /// One page of the catalog, filtered and sorted as the caller asked, with
@@ -75,10 +94,14 @@ public sealed class CatalogService(CatalogDbContext db)
         PagingArguments pagingArguments,
         QueryContext<Product>? query,
         CancellationToken cancellationToken)
-        => await db.Products
+    {
+        counter.RecordLookup();
+
+        return await db.Products
             .AsNoTracking()
             .With(query, DefaultOrder)
             .ToPageAsync(pagingArguments, cancellationToken);
+    }
 
     private static SortDefinition<Product> DefaultOrder(SortDefinition<Product> sort)
         => sort.IfEmpty(order => order.AddAscending(p => p.Title))
@@ -94,8 +117,12 @@ public sealed class CatalogService(CatalogDbContext db)
     public async Task<IReadOnlyDictionary<Guid, Product>> GetProductsByIdsAsync(
         IReadOnlyList<Guid> ids,
         CancellationToken cancellationToken)
-        => await db.Products
+    {
+        counter.RecordLookup();
+
+        return await db.Products
             .AsNoTracking()
             .Where(p => ids.Contains(p.Id))
             .ToDictionaryAsync(p => p.Id, cancellationToken);
+    }
 }

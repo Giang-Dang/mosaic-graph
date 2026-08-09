@@ -1,10 +1,19 @@
 using Mosaic.Catalog;
 using Mosaic.Catalog.Data;
+using Mosaic.ServiceDefaults;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Catalog's own database, on the same PostgreSQL server Mosaic uses. EF Core
-// creates it on first start, so nothing in docker-compose.yml had to learn
+// Chapter 12. Catalog had none of this: the request timeline, the resolver
+// count and the two counters were all built inside Mosaic.Api in chapters 3 and
+// 4, and chapter 8's extraction left them there. For four chapters this service
+// could not say what any request had cost it, which is what chapter 10 meant by
+// half of every federated query being unobserved. Three lines fix the half that
+// was a missing registration. The half that is a missing trace is chapter 23's.
+builder.Services.AddMosaicServiceDefaults();
+
+// Catalog's own database, on the PostgreSQL server all six services share. EF
+// Core creates it on first start, so nothing in docker-compose.yml had to learn
 // about this service to give it storage.
 builder.Services.AddCatalogDatabase(
     builder.Configuration.GetConnectionString("Catalog")
@@ -13,57 +22,31 @@ builder.Services.AddCatalogDatabase(
             + "`docker compose up -d mosaic-db`, or set "
             + "ConnectionStrings__Catalog in the environment."));
 
-// One domain. Mosaic.Api's equivalent line lists five.
+// One domain. Mosaic.Api's equivalent line listed five until chapter 12, and
+// there is no Mosaic.Api now.
 builder.Services.AddCatalogDomain();
 
 builder.AddGraphQL()
-    // The line that makes this a subgraph rather than a GraphQL service.
-    // It adds _service and _entities to Query, the _Any scalar, the _Entity
-    // union built from every type carrying [Key], and the @link that declares
-    // which version of the federation specification this schema is written
-    // against.
-    .AddApolloFederation()
+    // AddApolloFederation, registerNodeInterface: false, the two cost options,
+    // the application-scoped logger factory and the timeline listener. These
+    // were five separate calls in this file with a long comment against each,
+    // and the comments are still there - in Mosaic.ServiceDefaults, once,
+    // instead of six times.
+    .AddMosaicSubgraph()
     .AddCatalog()
     .RegisterDbContextFactory<CatalogDbContext>()
     // browseProducts still pages, filters, sorts and projects exactly as
-    // chapter 4 left it. Extraction did not touch the field.
+    // chapter 4 left it. Neither extraction touched the field.
     .AddFiltering()
     .AddSorting()
-    .AddPagingArguments()
-    // registerNodeInterface: false is the one deliberate loss of this chapter.
-    // It keeps the node id serializer, so Product.id is still the global
-    // identifier chapter 5 designed and still encodes the type name beside the
-    // key - which matters more than ever now, because that string is the
-    // federation key both services have to agree on. What it drops is
-    // Query.node and Query.nodes. Two subgraphs both declaring those fields is
-    // a composition error, and @shareable would be a lie: neither service can
-    // resolve the other's node types. Chapter 13 is where a federated node
-    // field comes back.
-    .AddGlobalObjectIdentification(registerNodeInterface: false)
-    // Two things HotChocolate publishes that the Cosmo composer refuses to
-    // read, and both are version skew rather than a mistake in either tool.
-    // HotChocolate writes @cost(weight: "10") with a String, following the
-    // current cost specification draft; wgc 0.129.7 carries a definition whose
-    // weight is an Int!, and rejects every field the analyzer stamped. And
-    // @listSize arrives with a slicingArgumentDefaultValue argument the
-    // composer's definition does not declare - HotChocolate's own option for
-    // it is documented as "the non-spec slicing argument default value", so
-    // the library knows.
-    //
-    // Turning the defaults off does not turn cost analysis off: the limits and
-    // the analyzer are separate settings, and an explicit [Cost] still counts.
-    // What is lost is the automatic weight on every resolver-backed field, and
-    // with it the numbers chapter 5 printed for Product.reviews. Chapter 25 is
-    // where cost is a subject rather than a composition problem.
-    .ModifyCostOptions(options =>
-    {
-        options.ApplyCostDefaults = false;
-        options.ApplySlicingArgumentDefaultValue = false;
-    });
+    .AddPagingArguments();
+
+builder.Services.AddMosaicPipelineReport();
 
 var app = builder.Build();
 
-app.MapGet("/health", () => Results.Ok("healthy"));
+app.UseMosaicServiceDefaults();
+
 app.MapGraphQL();
 
 app.RunWithGraphQLCommands(args);

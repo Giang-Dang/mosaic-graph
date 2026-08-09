@@ -11,15 +11,20 @@
 //                composition-cases.mjs does the same and the edit discipline
 //                is copied from it: an edit must match exactly once.
 //   subgraph     _entities asked directly, with no router in the way, of
-//                Mosaic on 5100 and of the sample on 5205.
+//                Pricing on 5102 and of the sample on 5205.
 //   router       the sample graph behind a real Cosmo Router container, where
 //                @provides is the only thing that can be measured.
 //
 // Unlike chapter 10's router-cases.mjs this script starts the two sample
 // subgraphs itself, so a reader can run it with one command. What it does not
-// start is Mosaic: two of the cases need Mosaic answering on 5100, and a
+// start is Mosaic: one of the cases needs Pricing answering on 5102, and a
 // script that started a database-backed service would be a second copy of
 // verify.ps1.
+//
+// The Mosaic half of this file moved in chapter 12. Until then the composition
+// cases edited schema/mosaic.graphql and the direct _entities calls went to
+// 5100; the monolith is gone, Product.shippingCost went to Pricing with the
+// rest of the domain, and both now point there.
 //
 // Usage:
 //   node scripts/entity-cases.mjs                run every case
@@ -37,15 +42,30 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const CATALOG_SCHEMA = join(repoRoot, 'schema', 'catalog.graphql');
-const MOSAIC_SCHEMA = join(repoRoot, 'schema', 'mosaic.graphql');
 const SAMPLE_DIR = join(repoRoot, 'samples', 'entity-resolution');
+
+// The six subgraphs Mosaic became in chapter 12, and the port each answers on.
+// The composition cases below edit "pricing", which is where Product.price and
+// Product.shippingCost went when Mosaic.Api was emptied.
+const MOSAIC_SUBGRAPHS = [
+  { name: 'catalog', port: 5101 },
+  { name: 'pricing', port: 5102 },
+  { name: 'inventory', port: 5103 },
+  { name: 'accounts', port: 5104 },
+  { name: 'reviews', port: 5105 },
+  { name: 'ordering', port: 5106 },
+];
+const EDITED_SUBGRAPH = 'pricing';
 
 // The image docker-compose.yml pins. Kept in step with it by hand; a mismatch
 // would mean the gate checks a router nobody runs.
 const IMAGE = 'ghcr.io/wundergraph/cosmo/router:0.337.1';
 
-const MOSAIC_URL = process.env.MOSAIC_URL ?? 'http://localhost:5100/graphql';
+// The subgraph the two direct-_entities cases talk to. It was Mosaic.Api on
+// 5100 through chapter 11 and is Pricing on 5102 now: Product.shippingCost
+// moved there with the rest of the domain, and it is still the only field in
+// the graph whose resolver needs a value another service owns.
+const MOSAIC_URL = process.env.MOSAIC_URL ?? 'http://localhost:5102/graphql';
 
 // Away from the ports docker-compose.yml and the launch profiles use, so the
 // whole composed stack can be up while this runs.
@@ -145,29 +165,34 @@ function editedOnce(source, from, to) {
   return source.replace(from, to);
 }
 
-/// Compose catalog plus an edited mosaic, and hand back whatever the composer
-/// said along with the config if it wrote one.
+/// Compose Mosaic's six subgraphs with one of them edited, and hand back
+/// whatever the composer said along with the config if it wrote one.
 function compose(dir, label, edit, extraArgs = []) {
-  // Normalised before the edit, because .gitattributes keeps these files at LF
-  // and `dotnet run -- schema export` writes CRLF. A re-export on Windows that
-  // nobody normalised turns every edit here into "matched 0 times", which is a
-  // confusing way to be told about a line ending.
-  const mosaic = edit(readFileSync(MOSAIC_SCHEMA, 'utf8').replace(/\r\n/g, '\n'));
   const graphDir = join(dir, label);
   mkdirSync(graphDir, { recursive: true });
-  copyFileSync(CATALOG_SCHEMA, join(graphDir, 'catalog.graphql'));
-  writeFileSync(join(graphDir, 'mosaic.graphql'), mosaic);
+
+  for (const subgraph of MOSAIC_SUBGRAPHS) {
+    // Normalised before the edit, because .gitattributes keeps these files at
+    // LF and `dotnet run -- schema export` writes CRLF. A re-export on Windows
+    // that nobody normalised turns every edit here into "matched 0 times",
+    // which is a confusing way to be told about a line ending.
+    const source = readFileSync(join(repoRoot, 'schema', `${subgraph.name}.graphql`), 'utf8')
+      .replace(/\r\n/g, '\n');
+    writeFileSync(
+      join(graphDir, `${subgraph.name}.graphql`),
+      subgraph.name === EDITED_SUBGRAPH ? edit(source) : source,
+    );
+  }
+
   writeFileSync(join(graphDir, 'graph.yaml'), [
     'version: 1',
     'subgraphs:',
-    '  - name: catalog',
-    '    routing_url: http://localhost:5101/graphql',
-    '    schema:',
-    '      file: catalog.graphql',
-    '  - name: mosaic',
-    '    routing_url: http://localhost:5100/graphql',
-    '    schema:',
-    '      file: mosaic.graphql',
+    ...MOSAIC_SUBGRAPHS.flatMap((s) => [
+      `  - name: ${s.name}`,
+      `    routing_url: http://localhost:${s.port}/graphql`,
+      '    schema:',
+      `      file: ${s.name}.graphql`,
+    ]),
     ''
   ].join('\n'));
 
@@ -299,7 +324,7 @@ const CASES = [
         problems,
         evidence: [
           `catalog owns it and declares it     ProductCategory!`,
-          `mosaic declares its @external copy  ProductCategory`,
+          `pricing declares its @external copy ProductCategory`,
           `the client-facing schema says       ${after?.replace('category: ', '') ?? '(nothing)'}`,
           `the composer said                   ${said.length === 0 ? 'nothing' : said}`
         ]
@@ -682,7 +707,7 @@ try {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{"query":"{ __typename }"}'
-    })).status === 200, `Mosaic on ${MOSAIC_URL}`, 5);
+    })).status === 200, `Pricing on ${MOSAIC_URL}`, 5);
   }
   if (needs.has('sample')) {
     await refuseIfTaken(WIDGETS_PORT, 'the catalog sample subgraph');

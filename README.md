@@ -27,6 +27,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | `ch09` | 9. Composition | Neither service changes by a line. The composed router execution config is committed at `federation/supergraph.json`, and `scripts/composition-cases.mjs` produces five composition errors on purpose, each one the real pair of schemas with a single edit applied |
 | `ch10` | 10. Enter the Router | Neither service changes by a line again. The Cosmo Router joins `docker-compose.yml` with a `router/config.yaml` of its own, and the storefront query answers for the first time since chapter 8 |
 | `ch11` | 11. Entity Resolution Done Right | `Product.shippingCost`, the first field in Mosaic that needs something Catalog owns, declared `@requires(fields: "category")`. Plus `samples/entity-resolution`, where a reference resolver writes down every call the router makes to it and `@provides` is caught both saving a round trip and telling a lie |
+| `ch12` | 12. Strangling the Monolith | Six services. `Mosaic.Api` is gone and its five domains are `Mosaic.Pricing`, `Mosaic.Inventory`, `Mosaic.Accounts`, `Mosaic.Reviews` and `Mosaic.Ordering`, on 5102 to 5106, one database each. `Mosaic.ServiceDefaults` is the first project here that is not a service. `scripts/override-cases.mjs` produces nine `@override` behaviours on purpose, including the book's first composition warning |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -36,25 +37,41 @@ intermediate one.
 
 - .NET SDK 10.0.302 or later in the same feature band (pinned in `global.json`)
 - Docker. Since chapter 4 Mosaic keeps its data in PostgreSQL, and
-  `docker-compose.yml` is the only description of it. Since chapter 8 there are
-  two services and two databases in that one container
+  `docker-compose.yml` is the only description of it. Since chapter 12 there are
+  six services and six databases in that one container
 - Node, to run the Postman collections from the command line and, since chapter
   7, to compose supergraphs with `wgc`
 
 ## Running it
 
-Start the database first, then both services, in two terminals. It is the same
-container whether you then run them from the SDK or from their own images:
+Six services is more than a terminal each, so start them from the compose file.
+The first run builds six images and is slow:
 
 ```
-docker compose up -d mosaic-db
-dotnet run --project src/Mosaic.Catalog    # http://localhost:5101
-dotnet run --project src/Mosaic.Api        # http://localhost:5100
+docker compose up -d --build mosaic-db mosaic-catalog mosaic-pricing \
+    mosaic-inventory mosaic-accounts mosaic-reviews mosaic-ordering mosaic-router
+docker compose ps
 ```
 
-Two commands since chapter 8. Each service keeps its own database on that one
-PostgreSQL container, `catalog` and `mosaic`, and creates and seeds it on first
-start:
+| Service | Port | Database | Owns |
+|---------|------|----------|------|
+| `mosaic-catalog` | 5101 | `catalog` | `Product`, and the root fields that find one |
+| `mosaic-pricing` | 5102 | `pricing` | `Product.price`, `Product.shippingCost` |
+| `mosaic-inventory` | 5103 | `inventory` | `Product.availableQuantity` |
+| `mosaic-accounts` | 5104 | `accounts` | `Customer` |
+| `mosaic-reviews` | 5105 | `reviews` | `Review`, `Product.reviews`, `Product.averageRating`, and the one mutation |
+| `mosaic-ordering` | 5106 | `ordering` | `Order`, `OrderLine` |
+| `mosaic-router` | 3002 | | the graph |
+
+Any one of them also runs from the SDK, which is what you want while changing
+it:
+
+```
+dotnet run --project src/Mosaic.Pricing    # http://localhost:5102
+```
+
+Each service keeps its own database on that one PostgreSQL container and creates
+and seeds it on first start:
 
 ```
 info: Mosaic.Catalog.Data.CatalogDatabaseSeeder[0]
@@ -62,13 +79,18 @@ info: Mosaic.Catalog.Data.CatalogDatabaseSeeder[0]
 ```
 
 ```
-info: Mosaic.Api.Infrastructure.Data.DatabaseSeeder[0]
-      Seeded 25 prices, 120 reviews, 12 customers and 8 orders into a newly created schema.
+info: Mosaic.Pricing.Data.PricingDatabaseSeeder[0]
+      Seeded 25 prices into a newly created database.
 ```
 
-No new container was needed for the new service. `EnsureCreatedAsync` creates
-the database as well as the schema, so `catalog` appeared on the server that was
-already running, beside `mosaic` and separate from it.
+No container was added for any of them. `EnsureCreatedAsync` creates the
+database as well as the schema, so all six appeared on the server that was
+already running, separate from each other.
+
+Three of the six have no root field at all. Pricing, Inventory and Reviews
+contribute fields to entities somebody else owns, so the only way into them is
+an `_entities` call. Open one in Nitro and `Query` has two fields on it, both
+beginning with an underscore.
 
 Both services serve Nitro, HotChocolate's built-in IDE, at `/graphql`. Open
 <http://localhost:5101/graphql> and ask Catalog for products:
@@ -106,50 +128,54 @@ opened with:
 }
 ```
 
-Catalog has the titles and cannot price them. Mosaic has the prices and cannot
-list the products. Assembling that answer out of two services is a router's job,
+Catalog has the titles and cannot price them. Pricing has the prices and cannot
+list the products. Assembling that answer out of six services is a router's job,
 and since chapter 10 there is one: start it and send the same query to
 <http://localhost:3002/graphql> instead, where it answers. The section below is
 about that. The way to ask one subgraph directly about a product it did not
 find is still `_entities`, further down.
 
-Since chapter 5 there is also a `Mutation` and a `Subscription`, both still
-Mosaic's. Both take a product id, and the id comes from Catalog now: ask
-<http://localhost:5101/graphql> for `{ browseProducts(first: 1) { nodes { id } } }`
-and paste the string it answers with into <http://localhost:5100/graphql>. Open
-two Nitro tabs, subscribe in one and write in the other:
+Since chapter 5 there is also a `Mutation` and a `Subscription`, and both are
+Reviews' since chapter 12. Both take a product id, and the id comes from
+Catalog: ask <http://localhost:5101/graphql> for
+`{ browseProducts(first: 1) { nodes { id } } }` and paste the string it answers
+with into <http://localhost:5105/graphql>. Open two Nitro tabs, subscribe in one
+and write in the other:
 
 ```graphql
 subscription { onReviewAdded(productId: "<a product id>") { rating body } }
 ```
 
-That the same string means the same product in both services is the whole
-mechanism of this chapter, not a convenience: it is the federation key.
+That the same string means the same product in two services is not a
+convenience. It is the federation key, and four of the six services carry their
+own copy of the code that decodes it.
 
-Or in containers, which publish the same two ports so every URL above still
-works:
-
-```
-docker compose up --build
-```
-
-## The two subgraphs
+## The six subgraphs
 
 `src/Mosaic.Catalog`, on 5101, owns the `Product` entity: `sku`, `title`,
 `description`, `category`, and the four root fields that find products -
 `products`, `browseProducts`, `productById` and `productBySku`.
 
-`src/Mosaic.Api`, on 5100, keeps Pricing, Inventory, Reviews, Accounts and
-Ordering. It declares the same `Product`, with the same key, and contributes
-`price`, `availableQuantity`, `reviews` and `averageRating` to it. Its own
-`Product` class holds an id and nothing else.
+`src/Mosaic.Pricing` on 5102, `src/Mosaic.Inventory` on 5103 and
+`src/Mosaic.Reviews` on 5105 each declare the same `Product`, with the same key,
+and contribute fields to it: `price` and `shippingCost`, `availableQuantity`,
+and `reviews` with `averageRating`. Their own `Product` classes hold an id and,
+in Pricing's case, an `@external` copy of the category that `shippingCost`
+requires.
 
-Both publish `_service`, which is how a composer reads a subgraph's schema, and
-`_entities`, which is how anything asks a subgraph for an object by key. Both
-schemas are committed, one file each: `schema/catalog.graphql` and
-`schema/mosaic.graphql`. `federation/mosaic.yaml` names the pair and says where
-each answers. Chapter 8 creates that file and composes nothing with it; chapter
-9 is where composition is the subject.
+`src/Mosaic.Accounts`, on 5104, owns `Customer`, which became an entity in
+chapter 12 because two other services reference one.
+
+`src/Mosaic.Ordering`, on 5106, owns `Order` and `OrderLine` and contributes
+nothing to anybody. It references `Product` and `Customer` and can resolve
+neither, which its schema says with `resolvable: false` on both keys.
+
+All six publish `_service`, which is how a composer reads a subgraph's schema,
+and `_entities`, which is how anything asks a subgraph for an object by key. All
+six schemas are committed, one file each under `schema/`, and
+`federation/mosaic.yaml` names them and says where each answers. Chapter 8
+creates that file with two entries and composes nothing with it; chapter 9 is
+where composition is the subject, and chapter 12 takes it to six.
 
 ### Composition (chapter 9)
 
@@ -199,8 +225,8 @@ about Mosaic is in the two files it mounts: `federation/supergraph.json`, and
 graph's. That file sets five things out of the 66 the router accepts, and each
 one has a comment saying why.
 
-The routing URLs in the composed config say `localhost:5100` and
-`localhost:5101`, which inside a container would be the container. The router
+The routing URLs in the composed config say `localhost:5101` through
+`localhost:5106`, which inside a container would be the container. The router
 rewrites them to `host.docker.internal` on its own -
 `localhost_fallback_inside_docker` defaults to true - which keeps one composed
 config working whether the subgraphs were started with `dotnet run` or by
@@ -260,17 +286,17 @@ curl -s http://localhost:5101/graphql \
 {"data":{"_entities":[{"sku":"MOS-FRN-0001","title":"Larsen Oak Dining Table"}]}}
 ```
 
-Send the same representation to 5100 and put `price { amount currency }` in the
-selection instead, and Mosaic answers for the same product out of its own
-tables. Neither service can answer for the other's fields, and neither needs to:
-a representation carries `__typename` and the key, and that is all either one
-reads.
+Send the same representation to 5102 and put `price { amount currency }` in the
+selection instead, and Pricing answers for the same product out of its own
+tables. Send it to 5103 and ask for `availableQuantity`. No service can answer
+for another's fields and none needs to: a representation carries `__typename`
+and the key, and that is all any of them reads.
 
-`Query.node` and `Query.nodes` are gone from both. Two subgraphs cannot both
-declare them, and `@shareable` would be a lie, because neither service can
-resolve the other's node types. The `Node` interface stayed, and so did the
-global identifiers, which is what makes the key above work at all. Chapter 13 is
-where a federated `node` field comes back.
+`Query.node` and `Query.nodes` are gone from all six. Two subgraphs cannot both
+declare them, and `@shareable` would be a lie, because no service can resolve
+another's node types. The `Node` interface stayed, and so did the global
+identifiers, which is what makes the key above work at all. Chapter 13 is where
+a federated `node` field comes back.
 
 ## Verifying it
 
@@ -333,6 +359,13 @@ first. Neither leaves its container behind.
 ## Layout
 
 ```
+src/Mosaic.ServiceDefaults/  the platform, and the only project here that is
+                         not a service. What all six do the same way, and
+                         nothing any two of them have to agree about
+  Counting/              the lookup counter
+  Data/                  the SQL command counter and the snake_case convention
+  Diagnostics/           the pipeline report and the per-request timeline
+  MosaicSubgraphDefaults.cs  the builder calls that make a service composable
 src/Mosaic.Catalog/      the Catalog subgraph, on 5101
   Catalog/               products: identity, description, category
     Data/                the DbContext, the seeder, the service and its DataLoader
@@ -340,20 +373,19 @@ src/Mosaic.Catalog/      the Catalog subgraph, on 5101
                          resolver that turns a representation back into one
     Types/               the root fields, and Product's id and node resolver
   Federation/            PageCursor, marked shareable so both graphs may declare it
-src/Mosaic.Api/          the other five domains, on 5100
-  Catalog/Model/         all that is left of Catalog here: a Product carrying an
-                         id and a reference resolver, for the other domains to
-                         hang their fields on
-  Pricing/               what a product costs
-  Inventory/             whether you can have one
-  Reviews/               what customers thought
-  Accounts/              who the customers are
-  Ordering/              what they bought
-  Infrastructure/        the lookup counter
-    Data/                the DbContext, the seeder and the SQL command counter
-    Diagnostics/         the pipeline report and the per-request timeline
-    Errors/              the Error interface every domain error implements
-    Federation/          PageCursor again, the same two attributes
+src/Mosaic.Pricing/      what a product costs, on 5102
+  Catalog/Model/         a Product stub with a reference resolver, an @external
+                         copy of the category shippingCost requires, and a copy
+                         of the key decoder
+  Pricing/               prices, shipping rates, and Money
+src/Mosaic.Inventory/    whether you can have one, on 5103
+src/Mosaic.Accounts/     who the customers are, on 5104. Owns the Customer
+                         entity and the only CustomerKey decoder
+src/Mosaic.Reviews/      what customers thought, on 5105. The only service that
+                         can be written to, and the only one with a subscription
+  Errors/                the Error interface every domain error implements
+src/Mosaic.Ordering/     what they bought, on 5106. References Product and
+                         Customer and resolves neither
 federation/mosaic.yaml   which subgraphs the graph is made of, and where each
                          one answers
 federation/supergraph.json  the composed graph, committed since chapter 9 and
@@ -367,11 +399,14 @@ samples/federated-wire/    two subgraphs and a router, so the traffic between
 samples/entity-attribute-placement/
                            the same entity written four ways, to show where
                            [Key] and [ReferenceResolver] may go; chapter 8
+samples/entity-resolution/ two subgraphs built to be watched: what _entities
+                           does with a list, and what @provides hides; chapter 11
 schema/                  committed SDL snapshots, one per service
 postman/                 collections and environments
-scripts/                 verify.ps1 and verify.sh, plus the two case runners
-                         they both call: composition-cases.mjs and
-                         router-cases.mjs
+scripts/                 verify.ps1 and verify.sh, plus the four case runners
+                         they both call: composition-cases.mjs,
+                         router-cases.mjs, entity-cases.mjs and
+                         override-cases.mjs
 ```
 
 Each domain's `Data/` folder holds everything that domain knows about storage:

@@ -13,12 +13,12 @@
 // afternoon and 19 to 20 ms another purely because the machine was busier.
 // Numbers compared across runs say nothing; numbers compared inside one run do.
 //
-// Needs both subgraphs on 5100 and 5101 and the router on 3002:
+// Needs the six subgraphs on 5101 to 5106 and the router on 3002. Chapter 12
+// made that a compose command rather than a list of terminals:
 //
-//   docker compose up -d mosaic-db
-//   dotnet run --project src/Mosaic.Catalog
-//   dotnet run --project src/Mosaic.Api
-//   docker compose up -d mosaic-router
+//   docker compose up -d --build mosaic-db mosaic-catalog mosaic-pricing \
+//                                mosaic-inventory mosaic-accounts \
+//                                mosaic-reviews mosaic-ordering mosaic-router
 //
 // Usage:
 //   node scripts/measure-router.mjs             the latency table
@@ -34,8 +34,21 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const CATALOG = process.env.MOSAIC_CATALOG_URL ?? 'http://localhost:5101/graphql';
-const MOSAIC = process.env.MOSAIC_API_URL ?? 'http://localhost:5100/graphql';
+const PRICING = process.env.MOSAIC_PRICING_URL ?? 'http://localhost:5102/graphql';
+const INVENTORY = process.env.MOSAIC_INVENTORY_URL ?? 'http://localhost:5103/graphql';
+const REVIEWS = process.env.MOSAIC_REVIEWS_URL ?? 'http://localhost:5105/graphql';
 const ROUTER = process.env.MOSAIC_ROUTER_URL ?? 'http://localhost:3002/graphql';
+
+// The six subgraphs and the port each answers on, for the reload timing's
+// recompose. Kept in step with federation/mosaic.yaml by hand.
+const SUBGRAPHS = [
+  { name: 'catalog', port: 5101 },
+  { name: 'pricing', port: 5102 },
+  { name: 'inventory', port: 5103 },
+  { name: 'accounts', port: 5104 },
+  { name: 'reviews', port: 5105 },
+  { name: 'ordering', port: 5106 },
+];
 
 const RUNS = Number(process.env.MOSAIC_MEASURE_RUNS ?? 60);
 const WARMUP = Number(process.env.MOSAIC_MEASURE_WARMUP ?? 15);
@@ -82,25 +95,39 @@ async function latencyTable() {
   const storefront = {
     query: `{ browseProducts(first: ${FIRST}) { nodes { title price { amount currency } availableQuantity averageRating } } }`,
   };
-  const entities = {
-    query: 'query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Product { price { amount currency } availableQuantity averageRating } } }',
+  // One _entities query per contributing subgraph, because there is one
+  // subgraph per field now. This is where chapter 12 shows up in a timing: the
+  // hand-assembled row went from two calls to four.
+  const entitiesFor = (selection) => ({
+    query:
+      'query($representations: [_Any!]!) { _entities(representations: $representations) '
+      + `{ ... on Product { ${selection} } } }`,
     variables: { representations },
-  };
+  });
+  const pricingEntities = entitiesFor('price { amount currency }');
+  const inventoryEntities = entitiesFor('availableQuantity');
+  const reviewsEntities = entitiesFor('averageRating');
 
   console.log(`${''.padEnd(46)} median`);
   const direct = await time('catalog direct, titles only', () => post(CATALOG, catalogOnly));
   const routed = await time('router, titles only (one fetch)', () => post(ROUTER, catalogOnly));
-  await time(`mosaic direct, _entities for ${FIRST} products`, () => post(MOSAIC, entities));
-  const byHand = await time('the two calls by hand, in sequence', async () => {
+  await time(`pricing direct, _entities for ${FIRST} products`, () => post(PRICING, pricingEntities));
+  const byHand = await time('the four calls by hand, in sequence', async () => {
     const first = await post(CATALOG, { query: `{ browseProducts(first: ${FIRST}) { nodes { id title } } }` });
     const reps = first.data.browseProducts.nodes.map((n) => ({ __typename: 'Product', id: n.id }));
-    return post(MOSAIC, { query: entities.query, variables: { representations: reps } });
+    const variables = { representations: reps };
+    await post(PRICING, { query: pricingEntities.query, variables });
+    await post(INVENTORY, { query: inventoryEntities.query, variables });
+    return post(REVIEWS, { query: reviewsEntities.query, variables });
   });
-  const twoHop = await time('router, the storefront query (two fetches)', () => post(ROUTER, storefront));
+  const fourHop = await time('router, the storefront query (four fetches)', () => post(ROUTER, storefront));
 
   console.log('\nderived, in milliseconds:');
   console.log(`  router overhead on a single-subgraph query  ${(routed - direct).toFixed(1)}`);
-  console.log(`  router overhead on the two-hop query        ${(twoHop - byHand).toFixed(1)}`);
+  console.log(`  router overhead on the four-hop query       ${(fourHop - byHand).toFixed(1)}`);
+  console.log('\nThe hand-assembled row is deliberately sequential and the router is not:');
+  console.log('the three entity fetches do not depend on each other, so the planner runs');
+  console.log('them in parallel and this comparison flatters the router. Chapter 12 says so.');
   console.log('\nSingle-machine numbers, and upper bounds: the router reaches the');
   console.log('subgraphs across Docker\'s bridge and back in through a published port,');
   console.log('while the direct rows are loopback on the host. Run it twice before');
@@ -119,23 +146,27 @@ async function reloadTiming() {
 
   try {
     const from = '  averageRating: Float\n';
-    const mosaic = readFileSync(join(repoRoot, 'schema', 'mosaic.graphql'), 'utf8');
-    if (mosaic.split(from).length - 1 !== 1) {
-      throw new Error('the averageRating line did not match exactly once; fix this script rather than the schema');
+    for (const subgraph of SUBGRAPHS) {
+      const source = readFileSync(join(repoRoot, 'schema', `${subgraph.name}.graphql`), 'utf8')
+        .replace(/\r\n/g, '\n');
+      if (subgraph.name !== 'reviews') {
+        writeFileSync(join(dir, `${subgraph.name}.graphql`), source);
+        continue;
+      }
+      if (source.split(from).length - 1 !== 1) {
+        throw new Error('the averageRating line did not match exactly once; fix this script rather than the schema');
+      }
+      writeFileSync(join(dir, 'reviews.graphql'), source.replace(from, ''));
     }
-    writeFileSync(join(dir, 'mosaic.graphql'), mosaic.replace(from, ''));
-    copyFileSync(join(repoRoot, 'schema', 'catalog.graphql'), join(dir, 'catalog.graphql'));
     writeFileSync(join(dir, 'graph.yaml'), [
       'version: 1',
       'subgraphs:',
-      '  - name: catalog',
-      '    routing_url: http://localhost:5101/graphql',
-      '    schema:',
-      '      file: catalog.graphql',
-      '  - name: mosaic',
-      '    routing_url: http://localhost:5100/graphql',
-      '    schema:',
-      '      file: mosaic.graphql',
+      ...SUBGRAPHS.flatMap((s) => [
+        `  - name: ${s.name}`,
+        `    routing_url: http://localhost:${s.port}/graphql`,
+        '    schema:',
+        `      file: ${s.name}.graphql`,
+      ]),
       '',
     ].join('\n'));
 

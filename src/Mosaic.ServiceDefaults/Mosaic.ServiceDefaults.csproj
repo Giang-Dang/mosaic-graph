@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The first project in this repository that is not a service. Chapter 12
+       splits Mosaic into six subgraphs, and six copies of chapter 3's
+       diagnostic listener would be six things to keep in step. What lives here
+       is the platform: the request timeline, the two counters, and the block of
+       builder calls that makes a HotChocolate service composable with the other
+       five.
+
+       What deliberately does not live here is anything that is a contract
+       between two services. ProductKey and ProductCategory stay duplicated in
+       every subgraph that needs them, because a shared class would turn an
+       agreement about a wire format into a compile-time dependency, and a
+       compile-time dependency between two teams is the coupling the extraction
+       was for. See the book's chapter 12 for the line between the two. -->
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- IApplicationBuilder, IHttpContextAccessor and ILogger all come from the
+       shared framework rather than from packages. A class library gets them
+       through a framework reference. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="HotChocolate.AspNetCore" />
+    <PackageReference Include="HotChocolate.ApolloFederation" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+
+    <!-- DbCommandInterceptor is relational rather than core. The six services
+         each get this transitively from the Npgsql provider; this project has
+         no provider and has to name it. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+  </ItemGroup>
+
+</Project>

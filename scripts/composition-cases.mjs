@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 // Chapter 9's composition errors, each produced on purpose.
 //
-// Every case below is Mosaic's real pair of subgraph schemas - schema/catalog.graphql
-// and schema/mosaic.graphql, exactly as they are committed - with one edit applied.
-// The edit is a literal string replacement that has to match exactly once, so a
-// case cannot go stale quietly: change the real schema in a way that removes the
-// text a case edits, and the case fails with "no match" rather than composing
-// something nobody meant.
+// Every case below is Mosaic's real set of subgraph schemas under schema/,
+// exactly as they are committed, with one edit applied. The edit is a literal
+// string replacement that has to match exactly once, so a case cannot go stale
+// quietly: change the real schema in a way that removes the text a case edits,
+// and the case fails with "no match" rather than composing something nobody
+// meant.
+//
+// It was a pair of schemas until chapter 12 and it is six now, and the cases
+// moved with it. Chapter 9's messages named the subgraph "mosaic", which does
+// not exist any more, so the same mistakes are made in "pricing" instead and
+// the composer says different words about them. That is worth knowing rather
+// than hiding: a catalogue of composition errors is a fact about a particular
+// set of subgraphs, and chapter 9's listings reproduce at tag ch11 and earlier
+// rather than here.
 //
 // The chapter prints these messages, so the gate asserts them. wgc wraps its
 // output in a box and hard-wraps long lines inside it, which makes a literal
@@ -33,8 +41,17 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const CATALOG = join(repoRoot, 'schema', 'catalog.graphql');
-const MOSAIC = join(repoRoot, 'schema', 'mosaic.graphql');
+
+// The six subgraphs and the port each answers on, in the order
+// federation/mosaic.yaml lists them. A case names one of these in `file`.
+const SUBGRAPHS = [
+  { name: 'catalog', port: 5101 },
+  { name: 'pricing', port: 5102 },
+  { name: 'inventory', port: 5103 },
+  { name: 'accounts', port: 5104 },
+  { name: 'reviews', port: 5105 },
+  { name: 'ordering', port: 5106 },
+];
 
 // ---------------------------------------------------------------------------
 // The cases
@@ -47,46 +64,48 @@ const MOSAIC = join(repoRoot, 'schema', 'mosaic.graphql');
 const CASES = [
   {
     name: 'baseline',
-    summary: 'the two schemas as committed, which compose',
+    summary: 'the six schemas as committed, which compose',
     edits: [],
     expectSuccess: true,
     expect: [],
   },
   {
     name: 'unsatisfiable-key',
-    summary: 'mosaic keeps its key but stops answering for it',
+    summary: 'pricing keeps its key but stops answering for it',
     // A key that says resolvable: false is a key the router may not use to enter
-    // this subgraph. Mosaic's four fields are then defined and unreachable.
+    // this subgraph. Pricing's two fields are then defined and unreachable.
+    //
+    // The error named four fields until chapter 12 and names two now, which is
+    // the split showing up in a message: the other two belong to inventory and
+    // reviews, and those subgraphs still have a resolvable key.
     edits: [
       {
-        file: 'mosaic',
+        file: 'pricing',
         from: 'type Product @key(fields: "id") {',
         to: 'type Product @key(fields: "id", resolvable: false) {',
       },
     ],
     expect: [
-      'The field "availableQuantity" is unresolvable at the following path:',
-      'The root type field "Query.products" is defined in the following subgraph: "catalog".',
-      'The field "Product.availableQuantity" is defined in the following subgraph: "mosaic".',
-      'The entity ancestor "Product" in subgraph "catalog" has no accessible target entities (resolvable @key directives) in the subgraphs where "Product.availableQuantity" is defined.',
       'The field "price" is unresolvable at the following path:',
-      'The field "reviews" is unresolvable at the following path:',
-      'The field "averageRating" is unresolvable at the following path:',
+      'The root type field "Query.products" is defined in the following subgraph: "catalog".',
+      'The field "Product.price" is defined in the following subgraph: "pricing".',
+      'The entity ancestor "Product" in subgraph "catalog" has no accessible target entities (resolvable @key directives) in the subgraphs where "Product.price" is defined.',
+      'The field "shippingCost" is unresolvable at the following path:',
     ],
   },
   {
     name: 'duplicate-field',
-    summary: 'both subgraphs declare Product.title, neither says shareable',
+    summary: 'catalog and pricing both declare Product.title, neither says shareable',
     edits: [
       {
-        file: 'mosaic',
+        file: 'pricing',
         from: 'type Product @key(fields: "id") {\n',
         to: 'type Product @key(fields: "id") {\n  title: String!\n',
       },
     ],
     expect: [
       'The Object "Product" defines the same fields in multiple subgraphs without the "@shareable" directive:',
-      'The field "title" is defined in the following subgraphs: "catalog", "mosaic".',
+      'The field "title" is defined in the following subgraphs: "catalog", "pricing".',
       'However, it is not declared "@shareable" in any of them.',
     ],
   },
@@ -99,44 +118,46 @@ const CASES = [
         from: 'type Product implements Node @key(fields: "id") {\n',
         to: 'type Product implements Node @key(fields: "id") {\n  averageRating: Int @shareable\n',
       },
-      { file: 'mosaic', from: '  averageRating: Float\n', to: '  averageRating: Float @shareable\n' },
+      { file: 'reviews', from: '  averageRating: Float\n', to: '  averageRating: Float @shareable\n' },
     ],
     expect: [
       'Each instance of a shared field must resolve identically across subgraphs.',
       'The field "Product.averageRating" could not be federated due to incompatible types across subgraphs.',
       'The named type "Int" is returned by the following subgraph: "catalog".',
-      'The named type "Float" is returned by the following subgraph: "mosaic".',
+      'The named type "Float" is returned by the following subgraph: "reviews".',
     ],
   },
   {
     name: 'missing-key',
-    summary: 'mosaic declares Product and forgets the key',
+    summary: 'pricing declares Product and forgets the key',
     // The error names id and shareability. It does not name the missing key.
-    edits: [{ file: 'mosaic', from: 'type Product @key(fields: "id") {', to: 'type Product {' }],
+    // With six subgraphs it also names the four that got it right, which is
+    // more help than the two-subgraph version gave and still not the word "key".
+    edits: [{ file: 'pricing', from: 'type Product @key(fields: "id") {', to: 'type Product {' }],
     expect: [
       'The Object "Product" defines the same fields in multiple subgraphs without the "@shareable" directive:',
-      'The field "id" is defined and declared "@shareable" in the following subgraph: "catalog".',
-      'However, it is not declared "@shareable" in the following subgraph: "mosaic".',
+      'The field "id" is defined and declared "@shareable" in the following subgraphs: "catalog", "inventory", "reviews", "ordering".',
+      'However, it is not declared "@shareable" in the following subgraph: "pricing".',
     ],
   },
   {
     name: 'enum-drift',
-    summary: 'both subgraphs declare ProductCategory with different members',
+    summary: 'catalog and pricing declare ProductCategory with different members',
     // Catalog uses the enum as an output (Product.category) and as an input
     // (ProductFilterInput), which is the condition the composer's advice is
-    // about. Mosaic declaring a shorter copy is how an enum drifts in practice:
-    // somebody adds a member on one side of a cut.
+    // about. A second subgraph declaring a shorter copy is how an enum drifts
+    // in practice: somebody adds a member on one side of a cut.
     //
-    // Until chapter 11 this case had to invent Mosaic's copy, because Mosaic
-    // had no reason to declare the enum at all. It has one now - the
-    // @external category that Product.shippingCost requires - so the case
+    // Until chapter 11 this case had to invent the second copy, because no
+    // other subgraph had a reason to declare the enum at all. Pricing has one -
+    // the @external category that Product.shippingCost requires - so the case
     // shortens the real declaration rather than adding a second one. Adding
-    // one now produces a different error entirely, about a type defined twice
-    // in one document, which is a fact about the edit rather than about
+    // one produces a different error entirely, about a type defined twice in
+    // one document, which is a fact about the edit rather than about
     // federation.
     edits: [
       {
-        file: 'mosaic',
+        file: 'pricing',
         from: 'enum ProductCategory {\n  FURNITURE\n  LIGHTING\n  KITCHEN\n  TEXTILES\n  STORAGE\n}',
         to: 'enum ProductCategory {\n  FURNITURE\n  LIGHTING\n  KITCHEN\n}',
       },
@@ -148,18 +169,18 @@ const CASES = [
   },
   {
     name: 'key-mismatch',
-    summary: 'the two subgraphs key the same entity on different fields',
+    summary: 'two subgraphs key the same entity on different fields',
     edits: [
       {
-        file: 'mosaic',
+        file: 'pricing',
         from: 'type Product @key(fields: "id") {\n',
         to: 'type Product @key(fields: "sku") {\n  sku: String!\n',
       },
     ],
     expect: [
-      'The field "id" is defined and declared "@shareable" in the following subgraph: "catalog".',
-      'However, it is not declared "@shareable" in the following subgraph: "mosaic".',
-      'The field "sku" is defined and declared "@shareable" in the following subgraph: "mosaic".',
+      'The field "id" is defined and declared "@shareable" in the following subgraphs: "catalog", "inventory", "reviews", "ordering".',
+      'However, it is not declared "@shareable" in the following subgraph: "pricing".',
+      'The field "sku" is defined and declared "@shareable" in the following subgraph: "pricing".',
       'However, it is not declared "@shareable" in the following subgraph: "catalog".',
     ],
   },
@@ -196,37 +217,41 @@ function applyEdits(source, edits, label) {
 function compose(testCase) {
   const dir = mkdtempSync(join(tmpdir(), 'mosaic-composition-'));
   try {
-    const catalog = readFileSync(CATALOG, 'utf8');
-    const mosaic = readFileSync(MOSAIC, 'utf8');
-    writeFileSync(
-      join(dir, 'catalog.graphql'),
-      applyEdits(
-        catalog,
-        testCase.edits.filter((e) => e.file === 'catalog'),
-        testCase.name,
-      ),
-    );
-    writeFileSync(
-      join(dir, 'mosaic.graphql'),
-      applyEdits(
-        mosaic,
-        testCase.edits.filter((e) => e.file === 'mosaic'),
-        testCase.name,
-      ),
-    );
+    const named = new Set(testCase.edits.map((e) => e.file));
+    for (const name of named) {
+      if (!SUBGRAPHS.some((s) => s.name === name)) {
+        throw new Error(
+          `case "${testCase.name}": edits a subgraph called "${name}", and there is no such subgraph.`,
+        );
+      }
+    }
+
+    for (const subgraph of SUBGRAPHS) {
+      const source = readFileSync(
+        join(repoRoot, 'schema', `${subgraph.name}.graphql`),
+        'utf8',
+      );
+      writeFileSync(
+        join(dir, `${subgraph.name}.graphql`),
+        applyEdits(
+          source,
+          testCase.edits.filter((e) => e.file === subgraph.name),
+          testCase.name,
+        ),
+      );
+    }
+
     writeFileSync(
       join(dir, 'graph.yaml'),
       [
         'version: 1',
         'subgraphs:',
-        '  - name: catalog',
-        '    routing_url: http://localhost:5101/graphql',
-        '    schema:',
-        '      file: catalog.graphql',
-        '  - name: mosaic',
-        '    routing_url: http://localhost:5100/graphql',
-        '    schema:',
-        '      file: mosaic.graphql',
+        ...SUBGRAPHS.flatMap((s) => [
+          `  - name: ${s.name}`,
+          `    routing_url: http://localhost:${s.port}/graphql`,
+          '    schema:',
+          `      file: ${s.name}.graphql`,
+        ]),
         '',
       ].join('\n'),
     );

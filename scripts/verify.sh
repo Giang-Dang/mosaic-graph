@@ -49,11 +49,20 @@
 
 set -u
 
-PORT="${MOSAIC_PORT:-5100}"
-
-# The Catalog subgraph, extracted in chapter 8. This is not MOSAIC_CATALOG_PORT
-# below: that one is chapter 7's sample catalog, a different service on 5201.
-CATALOG_SUBGRAPH_PORT="${MOSAIC_CATALOG_SUBGRAPH_PORT:-5101}"
+# The first of Mosaic's six subgraph ports. They are consecutive from here, in
+# the order federation/mosaic.yaml lists them - catalog, pricing, inventory,
+# accounts, reviews, ordering. Two ports until chapter 12, and 5100 was the
+# monolith's; nothing listens on 5100 any more.
+#
+# MOSAIC_CATALOG_SUBGRAPH_PORT is not MOSAIC_CATALOG_PORT below: that one is
+# chapter 7's sample catalog, a different service on 5201.
+FIRST_SUBGRAPH_PORT="${MOSAIC_CATALOG_SUBGRAPH_PORT:-5101}"
+CATALOG_SUBGRAPH_PORT="$FIRST_SUBGRAPH_PORT"
+PRICING_PORT="$((FIRST_SUBGRAPH_PORT + 1))"
+INVENTORY_PORT="$((FIRST_SUBGRAPH_PORT + 2))"
+ACCOUNTS_PORT="$((FIRST_SUBGRAPH_PORT + 3))"
+MOSAIC_REVIEWS_SUBGRAPH_PORT="$((FIRST_SUBGRAPH_PORT + 4))"
+ORDERING_PORT="$((FIRST_SUBGRAPH_PORT + 5))"
 
 STARTUP_TIMEOUT_SECONDS="${MOSAIC_STARTUP_TIMEOUT:-60}"
 DATABASE_TIMEOUT_SECONDS="${MOSAIC_DATABASE_TIMEOUT:-90}"
@@ -79,19 +88,28 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SOLUTION="$REPO_ROOT/Mosaic.slnx"
-API_PROJECT="$REPO_ROOT/src/Mosaic.Api/Mosaic.Api.csproj"
-COMMITTED_SCHEMA="$REPO_ROOT/schema/mosaic.graphql"
 SAMPLES_DIR="$REPO_ROOT/samples/three-approaches"
 SAMPLE_SCHEMA_DIR="$REPO_ROOT/schema/samples"
-POSTMAN_COLLECTION="$REPO_ROOT/postman/mosaic-federation.postman_collection.json"
-POSTMAN_ENVIRONMENT="$REPO_ROOT/postman/mosaic-federation.local.postman_environment.json"
-BASE_URL="http://localhost:$PORT"
 
-# -- chapter 8's second subgraph --------------------------------------------
+# Retired at chapter 12 and replaced, for the reason decision 54 gives about the
+# one before it: most of mosaic-federation's requests asked port 5100 for
+# something, and there is no port 5100.
+POSTMAN_COLLECTION="$REPO_ROOT/postman/mosaic-subgraphs.postman_collection.json"
+POSTMAN_ENVIRONMENT="$REPO_ROOT/postman/mosaic-subgraphs.local.postman_environment.json"
 
-CATALOG_PROJECT="$REPO_ROOT/src/Mosaic.Catalog/Mosaic.Catalog.csproj"
+# -- the six subgraphs -------------------------------------------------------
+
+MOSAIC_CATALOG_URL="http://localhost:$CATALOG_SUBGRAPH_PORT"
+MOSAIC_PRICING_URL="http://localhost:$PRICING_PORT"
+MOSAIC_INVENTORY_URL="http://localhost:$INVENTORY_PORT"
+MOSAIC_ACCOUNTS_URL="http://localhost:$ACCOUNTS_PORT"
+MOSAIC_REVIEWS_URL="http://localhost:$MOSAIC_REVIEWS_SUBGRAPH_PORT"
+MOSAIC_ORDERING_URL="http://localhost:$ORDERING_PORT"
+
+# Kept for the steps that still name Catalog directly.
+CATALOG_SUBGRAPH_URL="$MOSAIC_CATALOG_URL"
 CATALOG_SCHEMA="$REPO_ROOT/schema/catalog.graphql"
-CATALOG_SUBGRAPH_URL="http://localhost:$CATALOG_SUBGRAPH_PORT"
+
 FEDERATION_GRAPH="$REPO_ROOT/federation/mosaic.yaml"
 
 # -- chapter 9's composition ------------------------------------------------
@@ -124,11 +142,18 @@ ENTITIES_POSTMAN="$REPO_ROOT/postman/mosaic-entities.postman_collection.json"
 ENTITIES_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-entities.local.postman_environment.json"
 ENTITY_CASES="$REPO_ROOT/scripts/entity-cases.mjs"
 
-# What a computed field costs the service that computes it. Chapter 11 prints
-# these four numbers, so the gate produces them: the same storefront query
-# through the router with and without Product.shippingCost, read off Mosaic's
-# own request timeline. They are counts rather than timings, which is why they
-# belong in a gate at all - decision 62 keeps milliseconds out of one.
+# -- chapter 12's @override --------------------------------------------------
+
+# Nine cases: what the composer does with @override in every shape chapter 12
+# describes, including the two it rejects, the one it warns about, and the
+# federation 2.7 label wgc does not implement.
+OVERRIDE_CASES="$REPO_ROOT/scripts/override-cases.mjs"
+
+# What the storefront query costs, and where. Chapter 12 prints these numbers,
+# so the gate produces them: the same query through the router with and without
+# Product.shippingCost, read off each subgraph's own request timeline. They are
+# counts rather than timings, which is why they belong in a gate at all -
+# decision 62 keeps milliseconds out of one.
 #
 # The selection deliberately stops short of Product.reviews. A resolver runs per
 # review author, so the count of a query that walks the reviews depends on how
@@ -139,37 +164,72 @@ ENTITY_CASES="$REPO_ROOT/scripts/entity-cases.mjs"
 SHIPPING_STOREFRONT_QUERY='{ browseProducts(first: 25) { nodes { title price { amount currency } shippingCost { amount currency } availableQuantity averageRating } } }'
 PLAIN_STOREFRONT_QUERY='{ browseProducts(first: 25) { nodes { title price { amount currency } availableQuantity averageRating } } }'
 
-# 76 is one root field plus three resolvers for each of 25 products; 101 is the
-# same with one more per product. The statement count does not move, because
-# shippingCost takes the same DataLoader price does and finds the key already in
-# the batch.
-EXPECTED_RESOLVERS_WITHOUT_SHIPPING=76
-EXPECTED_RESOLVERS_WITH_SHIPPING=101
-EXPECTED_STOREFRONT_SQL=3
+# Resolvers and statements per subgraph, written as <name>:<resolvers>:<sql>.
+# Catalog runs the root field and one projected query; each of the other three
+# runs one _entities field plus one resolver per product, behind one batched
+# statement. Pricing runs two per product when shippingCost is selected, and
+# still one statement, because both fields take the same DataLoader.
+STOREFRONT_WITHOUT_SHIPPING="catalog:1:1
+pricing:26:1
+inventory:26:1
+reviews:26:1"
 
-# The two subgraphs since chapter 8, written as <name>:<port>. Both files under
-# schema/ are what `_service { sdl }` returns, which is what a composer reads,
-# so checking them is a check on the federated contract and not only on the SDL.
-# Each subgraph is a separate contract with the composer, so a drift in either
-# is a drift.
-SUBGRAPHS="mosaic:$PORT
-catalog:$CATALOG_SUBGRAPH_PORT"
+STOREFRONT_WITH_SHIPPING="catalog:1:1
+pricing:51:1
+inventory:26:1
+reviews:26:1"
+
+# The two that answer nothing for this query, and should say nothing about it.
+SILENT_FOR_STOREFRONT="accounts ordering"
+
+# The six subgraphs since chapter 12, written as <name>:<port>. Every file under
+# schema/ is what `_service { sdl }` returns, which is what a composer reads, so
+# checking them is a check on the federated contract and not only on the SDL.
+# Each subgraph is a separate contract with the composer, so a drift in any of
+# them is a drift.
+SUBGRAPHS="catalog:$CATALOG_SUBGRAPH_PORT
+pricing:$PRICING_PORT
+inventory:$INVENTORY_PORT
+accounts:$ACCOUNTS_PORT
+reviews:$MOSAIC_REVIEWS_SUBGRAPH_PORT
+ordering:$ORDERING_PORT"
 
 # Which project produces each subgraph and which committed file it has to keep
 # matching. Looked up by name rather than carried as two more columns in the
 # list above, because a path can hold a colon and that list cannot.
+#
+# The name is the schema file's stem and the project is the same word
+# capitalised, which is a convention rather than a coincidence: six services
+# that are named the same way in six places are six services nobody has to look
+# up.
 subgraph_project() {
     case "$1" in
-        mosaic) printf '%s' "$API_PROJECT" ;;
-        *)      printf '%s' "$CATALOG_PROJECT" ;;
+        catalog)   printf '%s' "$REPO_ROOT/src/Mosaic.Catalog/Mosaic.Catalog.csproj" ;;
+        pricing)   printf '%s' "$REPO_ROOT/src/Mosaic.Pricing/Mosaic.Pricing.csproj" ;;
+        inventory) printf '%s' "$REPO_ROOT/src/Mosaic.Inventory/Mosaic.Inventory.csproj" ;;
+        accounts)  printf '%s' "$REPO_ROOT/src/Mosaic.Accounts/Mosaic.Accounts.csproj" ;;
+        reviews)   printf '%s' "$REPO_ROOT/src/Mosaic.Reviews/Mosaic.Reviews.csproj" ;;
+        ordering)  printf '%s' "$REPO_ROOT/src/Mosaic.Ordering/Mosaic.Ordering.csproj" ;;
     esac
 }
 
 subgraph_schema() {
+    printf '%s' "$REPO_ROOT/schema/$1.graphql"
+}
+
+subgraph_url() {
     case "$1" in
-        mosaic) printf '%s' "$COMMITTED_SCHEMA" ;;
-        *)      printf '%s' "$CATALOG_SCHEMA" ;;
+        catalog)   printf '%s' "$MOSAIC_CATALOG_URL" ;;
+        pricing)   printf '%s' "$MOSAIC_PRICING_URL" ;;
+        inventory) printf '%s' "$MOSAIC_INVENTORY_URL" ;;
+        accounts)  printf '%s' "$MOSAIC_ACCOUNTS_URL" ;;
+        reviews)   printf '%s' "$MOSAIC_REVIEWS_URL" ;;
+        ordering)  printf '%s' "$MOSAIC_ORDERING_URL" ;;
     esac
+}
+
+subgraph_log() {
+    printf '%s' "$TEMP_DIR/$1.log"
 }
 
 # The three sample projects, in the order the chapter introduces them, written as
@@ -195,13 +255,25 @@ schema-first:Mosaic.Sample.SchemaFirst"
 CATALOG_QUERY='{ products { id title } }'
 EXPECTED_PRODUCT_COUNT=25
 
-# The Mosaic half is the same nested selection, reached the way a router would
-# reach it: one _entities call carrying every product key Catalog just handed
-# over. first: 12 is not arbitrary - the most reviewed product has exactly 12,
-# so this still asks for every review in the seed data and the total is still
-# 120.
-MOSAIC_ENTITIES_QUERY='query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Product { reviews(first: 12) { nodes { rating author { id displayName } } } } } }'
+# The Reviews piece is the nested selection, reached the way a router reaches
+# it: one _entities call carrying every product key Catalog just handed over.
+# first: 12 is not arbitrary - the most reviewed product has exactly 12, so this
+# still asks for every review in the seed data and the total is still 120.
+#
+# The author is a key in a wrapper since chapter 12, so this selects the
+# identifier and stops.
+REVIEWS_ENTITIES_QUERY='query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Product { reviews(first: 12) { nodes { rating author { id } } } } } }'
 EXPECTED_REVIEW_COUNT=120
+
+# The third piece, and the one chapter 12 added: the twelve distinct customers
+# behind those hundred and twenty reviews, as Accounts resolves them. This is
+# the batch that used to happen inside the monolith and now crosses a boundary.
+ACCOUNTS_ENTITIES_QUERY='query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Customer { id displayName email } } }'
+EXPECTED_DISTINCT_CUSTOMERS=12
+
+# Pricing answers for the same product keys, which is the assertion that would
+# catch the four subgraphs disagreeing about what a product key looks like.
+PRICING_ENTITIES_QUERY='query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Product { price { amount currency } } } }'
 
 # Catalog's reference resolver sits behind the same DataLoader Product.node
 # uses, so a batch of any size costs one statement. This is the assertion that
@@ -232,23 +304,25 @@ OperationVariableCoercionMiddleware
 ConcurrencyGateMiddleware
 OperationExecutionMiddleware"
 
-# The resolver count did not move, and that is the point. It was one root field
-# plus 25 review connections plus 120 authors; it is now one _entities field
-# plus 25 plus 120. Same shape, same number, different first term. Plain record
-# properties - title, rating, displayName - are not resolvers and are not
-# counted.
-EXPECTED_RESOLVER_COUNT=146
+# One _entities field and 25 review connections. It was 146 from chapter 2 to
+# chapter 11 and the missing 120 are the authors, which is a stranger result
+# than it looks.
+#
+# The engine still produces 120 authors. What it no longer does is run 120
+# resolver tasks to get them: GetAuthor takes a parent and returns a new object
+# with no await in it, so HotChocolate compiles it to a PureFieldDelegate and
+# runs it inline, and the ResolveFieldValue diagnostic event is raised inside
+# ResolverTask.Execute and BatchResolverTask and nowhere else. Read at tag
+# 16.6.0, commit 8fea46e.
+EXPECTED_RESOLVER_COUNT=26
 
-# The statement count did move, by exactly one. As a monolith this query cost
-# three: the products, their reviews, and the twelve distinct authors. Mosaic no
-# longer fetches the products, so it costs two, and the one that left is the
-# statement Catalog runs instead.
-EXPECTED_SQL_COMMAND_COUNT=2
+# One statement, and it was two at tag ch11: the reviews batch and the authors
+# batch. The authors batch is Accounts' now. Not a saving - the customers are
+# still fetched, in another process - but a measurement of what left.
+EXPECTED_SQL_COMMAND_COUNT=1
 
-# The lookup counter follows the statement count for the same reason: Mosaic
-# asks its own domains two questions, the reviews batch and the authors batch,
-# and no longer asks Catalog anything because it cannot.
-EXPECTED_LOOKUP_COUNT=2
+# The lookup counter follows it exactly, for the reason chapter 4 gave.
+EXPECTED_LOOKUP_COUNT=1
 
 # How many times the _entities query is sent, and how far above the expected
 # number a single run is allowed to land. See the comment beside the repeat
@@ -279,11 +353,11 @@ reviews:Mosaic.Sample.Wire.Reviews:$REVIEWS_PORT"
 EXPECTED_CATALOG_FETCH='{"query":"{products {title price __typename id}}"}'
 EXPECTED_REVIEWS_FETCH='{"variables":{"representations":[{"__typename":"Product","id":"1"},{"__typename":"Product","id":"2"},{"__typename":"Product","id":"3"}]},"query":"query($representations: [_Any!]!){_entities(representations: $representations){... on Product {__typename reviews {rating body}}}}"}'
 
-API_PID=""
-CATALOG_SUBGRAPH_PID=""
+# One pid per subgraph, in the order SUBGRAPHS lists them, space separated. It
+# was two named variables until chapter 12 and six copies of the same three
+# lines was not a thing worth writing.
+SUBGRAPH_PIDS=""
 TEMP_DIR=""
-API_LOG=""
-CATALOG_LOG=""
 SUMMARY=""
 JSON_TOOL=""
 STARTED_DATABASE=0
@@ -451,6 +525,62 @@ sys.stdout.write(json.dumps(
 PY
 }
 
+# Builds an _entities request for Customer out of a file of keys, one per line.
+# The keys come from author_keys above, which is to say from what Reviews
+# stored: re-encoding one here would test this script's idea of the format
+# rather than the two services' agreement about it.
+customer_entities_request() {
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    keys = [line.strip() for line in handle if line.strip()]
+
+representations = [{"__typename": "Customer", "id": key} for key in keys]
+sys.stdout.write(json.dumps(
+    {"query": sys.argv[2], "variables": {"representations": representations}}))
+PY
+}
+
+# How many entities in an Accounts answer came back with a name on them. A null
+# entity means Accounts could not decode a key Reviews wrote, which is the one
+# failure four duplicated key files could produce between them.
+resolved_customer_count() {
+    if [ "$JSON_TOOL" = "jq" ]; then
+        jq -r '[ (.data._entities // [])[] | select(. != null) | select(.displayName != null) ] | length' "$1"
+        return $?
+    fi
+
+    python3 - "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+entities = (payload.get("data") or {}).get("_entities") or []
+print(sum(1 for entity in entities if entity and entity.get("displayName")))
+PY
+}
+
+# The same check on the other side of the graph: how many representations
+# Pricing put a price on.
+priced_entity_count() {
+    if [ "$JSON_TOOL" = "jq" ]; then
+        jq -r '[ (.data._entities // [])[] | select(. != null) | select(.price != null) ] | length' "$1"
+        return $?
+    fi
+
+    python3 - "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+entities = (payload.get("data") or {}).get("_entities") or []
+print(sum(1 for entity in entities if entity and entity.get("price")))
+PY
+}
+
 # Prints "<has_errors> <entity_count> <null_count> <review_count>", tab
 # separated, from any _entities answer. A null entity is a legal answer - the
 # specification makes [_Entity] nullable - so the nulls are counted rather than
@@ -602,9 +732,13 @@ $(cat "$3" 2>/dev/null)"
     fi
 }
 
+# The tail of one subgraph's log. Takes the subgraph's name since chapter 12,
+# because "the service" stopped being a thing there is one of.
 log_tail() {
-    if [ -n "$API_LOG" ] && [ -f "$API_LOG" ]; then
-        tail -n 40 "$API_LOG"
+    local path
+    path="$(subgraph_log "${1:-reviews}")"
+    if [ -f "$path" ]; then
+        tail -n 40 "$path"
     else
         printf '(the service printed nothing)\n'
     fi
@@ -665,16 +799,22 @@ stop_service() {
     fi
 }
 
-stop_api() {
-    stop_service "$API_PID" "$PORT"
-    API_PID=""
-}
+# Six services now, so six ports to give back. The pids are recorded in the
+# order SUBGRAPHS lists them, so the two lists zip.
+stop_subgraphs() {
+    local pid port_list index
 
-# Chapter 8's second service, stopped the same way and on its own port. Two
-# services now, so two ports to give back.
-stop_catalog() {
-    stop_service "$CATALOG_SUBGRAPH_PID" "$CATALOG_SUBGRAPH_PORT"
-    CATALOG_SUBGRAPH_PID=""
+    port_list=""
+    for entry in $SUBGRAPHS; do
+        port_list="$port_list ${entry#*:}"
+    done
+
+    index=0
+    for pid in $SUBGRAPH_PIDS; do
+        index=$((index + 1))
+        stop_service "$pid" "$(printf '%s' "$port_list" | cut -d' ' -f$((index + 1)))"
+    done
+    SUBGRAPH_PIDS=""
 }
 
 # The chapter 7 subgraphs are plain `dotnet run` children like the two services
@@ -686,8 +826,7 @@ stop_wire_subgraph() {
 cleanup() {
     status=$?
 
-    stop_api
-    stop_catalog
+    stop_subgraphs
     stop_wire_subgraph "$CATALOG_PID"
     stop_wire_subgraph "$REVIEWS_PID"
     CATALOG_PID=""
@@ -801,8 +940,6 @@ step_ok 'build (Release)'
 # EXIT trap deletes. That includes the <name>-settings.json the schema exporter
 # writes next to every SDL file it produces.
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mosaic-verify.XXXXXX")"
-API_LOG="$TEMP_DIR/api.log"
-CATALOG_LOG="$TEMP_DIR/catalog.log"
 
 # -- 3. schema drift --------------------------------------------------------
 
@@ -839,7 +976,7 @@ subgraph that would break composition with the other.
 $(schema_diff "$committed" "$exported" "$name")"
     fi
 done
-step_ok 'both subgraph schemas match the committed snapshots'
+step_ok 'all six subgraph schemas match the committed snapshots'
 
 # -- 4. the three sample projects -------------------------------------------
 
@@ -962,7 +1099,7 @@ the chapter needs rewriting rather than this check needing loosening.'
     step_ok 'the placement sample still leaks exactly the field chapter 8 prints'
 fi
 
-# -- 5. start both subgraphs and ask the chapter's question in halves --------
+# -- 5. start the six subgraphs ----------------------------------------------
 
 for entry in $SUBGRAPHS; do
     name="${entry%%:*}"
@@ -973,6 +1110,10 @@ Stop it first - a stray 'docker compose up', a debugger, or an earlier run of th
     fi
 done
 
+# One at a time rather than all six at once, because each of them creates and
+# seeds a database on the way up and doing that in sequence makes a failure
+# readable.
+#
 # The URL goes in through the environment rather than the command line:
 # RunWithGraphQLCommands parses the process arguments itself, and it should not
 # have to know about --urls.
@@ -985,69 +1126,43 @@ done
 # MOSAIC_RESET_DATABASE drops the schema and reseeds it before the service takes
 # a request. The Postman collection submits a review, so without this the second
 # run of this script would find 121 of them and fail an assertion that is not
-# wrong. Both services read the same switch and each resets its own database.
-ASPNETCORE_URLS="$BASE_URL" ASPNETCORE_ENVIRONMENT=Development MOSAIC_RESET_DATABASE=1 dotnet run \
-    --project "$API_PROJECT" -c Release --no-build --no-launch-profile \
-    > "$API_LOG" 2>&1 &
-API_PID=$!
+# wrong. All six services read the same switch and each resets its own database,
+# which is the whole reason every seeder spells it the same way.
+for entry in $SUBGRAPHS; do
+    name="${entry%%:*}"
+    subgraph_url="$(subgraph_url "$name")"
+    subgraph_log="$(subgraph_log "$name")"
 
-health_deadline=$(( $(date +%s) + STARTUP_TIMEOUT_SECONDS ))
-healthy=0
-while [ "$(date +%s)" -lt "$health_deadline" ]; do
-    if ! kill -0 "$API_PID" 2>/dev/null; then
-        step_fail 'start api' "The service exited during start-up.
+    ASPNETCORE_URLS="$subgraph_url" ASPNETCORE_ENVIRONMENT=Development MOSAIC_RESET_DATABASE=1 dotnet run \
+        --project "$(subgraph_project "$name")" -c Release --no-build --no-launch-profile \
+        > "$subgraph_log" 2>&1 &
+    subgraph_pid=$!
+    SUBGRAPH_PIDS="$SUBGRAPH_PIDS $subgraph_pid"
 
-$(log_tail)"
+    health_deadline=$(( $(date +%s) + STARTUP_TIMEOUT_SECONDS ))
+    healthy=0
+    while [ "$(date +%s)" -lt "$health_deadline" ]; do
+        if ! kill -0 "$subgraph_pid" 2>/dev/null; then
+            step_fail "start $name" "The $name subgraph exited during start-up.
+
+$(tail -n 40 "$subgraph_log" 2>/dev/null)"
+        fi
+
+        if curl -fsS -o /dev/null --max-time 5 "$subgraph_url/health" 2>/dev/null; then
+            healthy=1
+            break
+        fi
+
+        sleep 0.5
+    done
+
+    if [ "$healthy" -ne 1 ]; then
+        step_fail "start $name" "$subgraph_url/health did not answer within $STARTUP_TIMEOUT_SECONDS seconds.
+
+$(tail -n 40 "$subgraph_log" 2>/dev/null)"
     fi
-
-    if curl -fsS -o /dev/null --max-time 5 "$BASE_URL/health" 2>/dev/null; then
-        healthy=1
-        break
-    fi
-
-    sleep 0.5
+    step_ok "$name answering on $subgraph_url/health"
 done
-
-if [ "$healthy" -ne 1 ]; then
-    step_fail 'start api' "$BASE_URL/health did not answer within $STARTUP_TIMEOUT_SECONDS seconds.
-
-$(log_tail)"
-fi
-step_ok "api answering on $BASE_URL/health"
-
-# -- 5b. the Catalog subgraph -----------------------------------------------
-
-# Started after Mosaic rather than beside it, because both of them create and
-# seed a database on the way up and doing that one at a time makes a failure
-# readable.
-ASPNETCORE_URLS="$CATALOG_SUBGRAPH_URL" ASPNETCORE_ENVIRONMENT=Development MOSAIC_RESET_DATABASE=1 dotnet run \
-    --project "$CATALOG_PROJECT" -c Release --no-build --no-launch-profile \
-    > "$CATALOG_LOG" 2>&1 &
-CATALOG_SUBGRAPH_PID=$!
-
-catalog_deadline=$(( $(date +%s) + STARTUP_TIMEOUT_SECONDS ))
-catalog_healthy=0
-while [ "$(date +%s)" -lt "$catalog_deadline" ]; do
-    if ! kill -0 "$CATALOG_SUBGRAPH_PID" 2>/dev/null; then
-        step_fail 'start catalog' "The Catalog subgraph exited during start-up.
-
-$(tail -n 40 "$CATALOG_LOG" 2>/dev/null)"
-    fi
-
-    if curl -fsS -o /dev/null --max-time 5 "$CATALOG_SUBGRAPH_URL/health" 2>/dev/null; then
-        catalog_healthy=1
-        break
-    fi
-
-    sleep 0.5
-done
-
-if [ "$catalog_healthy" -ne 1 ]; then
-    step_fail 'start catalog' "$CATALOG_SUBGRAPH_URL/health did not answer within $STARTUP_TIMEOUT_SECONDS seconds.
-
-$(tail -n 40 "$CATALOG_LOG" 2>/dev/null)"
-fi
-step_ok "catalog answering on $CATALOG_SUBGRAPH_URL/health"
 
 # -- 5c. what each subgraph publishes ---------------------------------------
 
@@ -1085,13 +1200,17 @@ $(schema_diff "$committed" "$published" "published-$name")"
 
     # grep -F, not grep: the directive is full of characters a regular
     # expression would read as syntax.
-    if ! grep -qF '@key(fields: "id")' "$published"; then
+    #
+    # Deliberately not anchored on the closing bracket. Ordering keys two
+    # entities it can only reference, both with resolvable: false, and a check
+    # that missed those would be checking four subgraphs and reporting on six.
+    if ! grep -qF '@key(fields: "id"' "$published"; then
         step_fail "$name published schema" "The $name subgraph publishes no @key(fields: \"id\").
 A schema printed without its key directives composes into a graph with no
 entities in it, which is the failure chapter 7 warned about."
     fi
 done
-step_ok 'both subgraphs publish the committed schemas through _service'
+step_ok 'all six subgraphs publish the committed schemas through _service'
 
 # -- 5d. the catalog half ---------------------------------------------------
 
@@ -1115,12 +1234,12 @@ if [ "$product_count" -ne "$EXPECTED_PRODUCT_COUNT" ]; then
 fi
 step_ok "catalog answered $EXPECTED_PRODUCT_COUNT products"
 
-# -- 5e. the mosaic half, through _entities ---------------------------------
+# -- 5e. the Reviews half, through _entities --------------------------------
 
-entities_request "$TEMP_DIR/catalog-products.json" "$MOSAIC_ENTITIES_QUERY" \
-    > "$TEMP_DIR/mosaic-entities-request.json"
-post_graphql "$BASE_URL" "$TEMP_DIR/mosaic-entities-request.json" \
-    "$TEMP_DIR/mosaic-entities.json" 'mosaic _entities'
+entities_request "$TEMP_DIR/catalog-products.json" "$REVIEWS_ENTITIES_QUERY" \
+    > "$TEMP_DIR/reviews-entities-request.json"
+post_graphql "$MOSAIC_REVIEWS_URL" "$TEMP_DIR/reviews-entities-request.json" \
+    "$TEMP_DIR/mosaic-entities.json" 'reviews _entities'
 
 read -r entities_errors entity_count null_entity_count review_count \
     <<< "$(summarise_entities "$TEMP_DIR/mosaic-entities.json")"
@@ -1134,9 +1253,55 @@ fi
 if [ "$review_count" -ne "$EXPECTED_REVIEW_COUNT" ]; then
     step_fail 'review count' "Expected $EXPECTED_REVIEW_COUNT reviews across all representations, got $review_count.
 This is the number chapters 2 to 5 measured through Query.products. The field it
-arrives through changed in chapter 8; the answer did not."
+arrives through changed in chapter 8, the service that owns it changed in
+chapter 12, and the answer has not changed at all."
 fi
-step_ok "mosaic answered $EXPECTED_PRODUCT_COUNT representations with $EXPECTED_REVIEW_COUNT reviews"
+step_ok "reviews answered $EXPECTED_PRODUCT_COUNT representations with $EXPECTED_REVIEW_COUNT reviews"
+
+# -- 5e2. the Accounts half, which chapter 12 created ------------------------
+
+# Every author key those reviews carried, handed to the service that owns
+# customers. Inside the monolith this was a DataLoader call; it is an _entities
+# call across a network now, and it is the clearest single measure of what the
+# split moved.
+author_keys "$TEMP_DIR/mosaic-entities.json" | tr -d '\r' > "$TEMP_DIR/customer-keys.txt"
+customer_key_count="$(count_lines "$TEMP_DIR/customer-keys.txt")"
+
+if [ "$customer_key_count" -ne "$EXPECTED_DISTINCT_CUSTOMERS" ]; then
+    step_fail 'author keys' "Expected $EXPECTED_DISTINCT_CUSTOMERS distinct customers behind $EXPECTED_REVIEW_COUNT reviews, got $customer_key_count.
+Reviews hands back a key in a wrapper and resolves no customer at all since
+chapter 12, so this is a count of what it stored rather than of what it looked
+up."
+fi
+
+customer_entities_request "$TEMP_DIR/customer-keys.txt" "$ACCOUNTS_ENTITIES_QUERY" \
+    > "$TEMP_DIR/accounts-entities-request.json"
+post_graphql "$MOSAIC_ACCOUNTS_URL" "$TEMP_DIR/accounts-entities-request.json" \
+    "$TEMP_DIR/accounts-entities.json" 'accounts _entities'
+
+resolved_customers="$(resolved_customer_count "$TEMP_DIR/accounts-entities.json")"
+if [ "$resolved_customers" -ne "$EXPECTED_DISTINCT_CUSTOMERS" ]; then
+    step_fail 'customer count' "Accounts resolved $resolved_customers of $EXPECTED_DISTINCT_CUSTOMERS customer keys Reviews handed out.
+Both services encode a customer identifier the same way or they do not share an
+entity at all, and CustomerKey.TryDecode is where that agreement is written down
+twice."
+fi
+step_ok "accounts resolved all $EXPECTED_DISTINCT_CUSTOMERS customer keys reviews handed out"
+
+# -- 5e3. Pricing answers for the same product keys -------------------------
+
+entities_request "$TEMP_DIR/catalog-products.json" "$PRICING_ENTITIES_QUERY" \
+    > "$TEMP_DIR/pricing-entities-request.json"
+post_graphql "$MOSAIC_PRICING_URL" "$TEMP_DIR/pricing-entities-request.json" \
+    "$TEMP_DIR/pricing-entities.json" 'pricing _entities'
+
+priced="$(priced_entity_count "$TEMP_DIR/pricing-entities.json")"
+if [ "$priced" -ne "$EXPECTED_PRODUCT_COUNT" ]; then
+    step_fail 'pricing _entities' "Pricing priced $priced of $EXPECTED_PRODUCT_COUNT representations.
+Four subgraphs now decode the same product key with four copies of the same
+file. This is the assertion that catches one of them drifting."
+fi
+step_ok "pricing priced all $EXPECTED_PRODUCT_COUNT representations catalog handed out"
 
 # A key that is not one of ours: a null entity and no errors key. The raw Guid is
 # the interesting case, because that is what this identifier looked like before
@@ -1236,7 +1401,7 @@ line_product_key=""
 while read -r candidate; do
     printf '{"query":"{ ordersByCustomer(customerId: \\"%s\\") { total { amount } lines { quantity product { id } } } }"}' \
         "$candidate" > "$TEMP_DIR/orders-request.json"
-    post_graphql "$BASE_URL" "$TEMP_DIR/orders-request.json" "$TEMP_DIR/orders.json" 'orders'
+    post_graphql "$MOSAIC_ORDERING_URL" "$TEMP_DIR/orders-request.json" "$TEMP_DIR/orders.json" 'orders'
 
     read -r order_count line_count line_product_key <<< "$(summarise_orders "$TEMP_DIR/orders.json")"
     if [ "$order_count" -gt 0 ]; then
@@ -1284,11 +1449,11 @@ while [ "$run" -lt "$VERIFY_QUERY_RUNS" ]; do
         --max-time 120 \
         -H 'Content-Type: application/json' \
         -H 'Accept: application/json' \
-        --data-binary "@$TEMP_DIR/mosaic-entities-request.json" \
-        "$BASE_URL/graphql")"
+        --data-binary "@$TEMP_DIR/reviews-entities-request.json" \
+        "$MOSAIC_REVIEWS_URL/graphql")"
 
     if [ "$repeat_status" != "200" ]; then
-        step_fail 'mosaic _entities' "Run $((run + 1)) of the query answered $repeat_status.
+        step_fail 'reviews _entities' "Run $((run + 1)) of the query answered $repeat_status.
 
 $(cat "$TEMP_DIR/repeat.json" 2>/dev/null)"
     fi
@@ -1303,7 +1468,7 @@ done
 waited=0
 logged_counts=""
 while [ "$waited" -lt 60 ]; do
-    logged_counts="$(grep -o 'Service lookups this request: [0-9][0-9]*' "$API_LOG" 2>/dev/null \
+    logged_counts="$(grep -o 'Service lookups this request: [0-9][0-9]*' "$(subgraph_log reviews)" 2>/dev/null \
         | sed 's/.*: //' | tr '\n' ' ')"
     if [ -n "$logged_counts" ]; then
         break
@@ -1349,7 +1514,7 @@ done
 
 # The pipeline is logged once, while the schema is being built, so by the time a
 # query has been answered these lines are already there.
-LOGGED_PIPELINE="$(sed -n 's/^ *[0-9][0-9]*\. \([^ ][^ ]*\) *$/\1/p' "$API_LOG" 2>/dev/null)"
+LOGGED_PIPELINE="$(sed -n 's/^ *[0-9][0-9]*\. \([^ ][^ ]*\) *$/\1/p' "$(subgraph_log reviews)" 2>/dev/null)"
 
 if [ -z "$LOGGED_PIPELINE" ]; then
     step_fail 'request pipeline' "The service never logged its request pipeline.
@@ -1378,7 +1543,7 @@ step_ok 'request pipeline is the expected 13 middleware, in order'
 waited=0
 logged_resolvers=""
 while [ "$waited" -lt 60 ]; do
-    logged_resolvers="$(grep -o '[0-9][0-9]* resolvers,' "$API_LOG" 2>/dev/null \
+    logged_resolvers="$(grep -o '[0-9][0-9]* resolvers,' "$(subgraph_log reviews)" 2>/dev/null \
         | sed 's/ resolvers,//' | tr '\n' ' ')"
     if [ -n "$logged_resolvers" ]; then
         break
@@ -1412,7 +1577,7 @@ esac
 
 # -- 6d. the database round trips -------------------------------------------
 
-logged_sql="$(grep -o '[0-9][0-9]* SQL)' "$API_LOG" 2>/dev/null | sed 's/ SQL)//' | tr '\n' ' ')"
+logged_sql="$(grep -o '[0-9][0-9]* SQL)' "$(subgraph_log reviews)" 2>/dev/null | sed 's/ SQL)//' | tr '\n' ' ')"
 
 if [ -z "$logged_sql" ]; then
     step_fail 'sql command count' "The timeline never reported a SQL command count.
@@ -1463,19 +1628,27 @@ if [ ! -f "$POSTMAN_COLLECTION" ] || [ ! -f "$POSTMAN_ENVIRONMENT" ]; then
 elif [ -z "$NEWMAN_BIN" ]; then
     step_skip 'postman' 'newman is not installed - run npm install first'
 else
-    # Both URLs are overridden rather than trusted: the environment file says
-    # 5100 and 5101, and this script can be pointed elsewhere.
+    # Every URL is overridden rather than trusted: the environment file names
+    # the default ports, and this script can be pointed elsewhere.
     if [ "$NEWMAN_VIA_NPX" -eq 1 ]; then
         "$NEWMAN_BIN" --no newman run "$POSTMAN_COLLECTION" \
             --environment "$POSTMAN_ENVIRONMENT" \
-            --env-var "mosaicUrl=$BASE_URL" \
-            --env-var "catalogUrl=$CATALOG_SUBGRAPH_URL" \
+            --env-var "catalogUrl=$MOSAIC_CATALOG_URL" \
+            --env-var "pricingUrl=$MOSAIC_PRICING_URL" \
+            --env-var "inventoryUrl=$MOSAIC_INVENTORY_URL" \
+            --env-var "accountsUrl=$MOSAIC_ACCOUNTS_URL" \
+            --env-var "reviewsUrl=$MOSAIC_REVIEWS_URL" \
+            --env-var "orderingUrl=$MOSAIC_ORDERING_URL" \
             --bail
     else
         "$NEWMAN_BIN" run "$POSTMAN_COLLECTION" \
             --environment "$POSTMAN_ENVIRONMENT" \
-            --env-var "mosaicUrl=$BASE_URL" \
-            --env-var "catalogUrl=$CATALOG_SUBGRAPH_URL" \
+            --env-var "catalogUrl=$MOSAIC_CATALOG_URL" \
+            --env-var "pricingUrl=$MOSAIC_PRICING_URL" \
+            --env-var "inventoryUrl=$MOSAIC_INVENTORY_URL" \
+            --env-var "accountsUrl=$MOSAIC_ACCOUNTS_URL" \
+            --env-var "reviewsUrl=$MOSAIC_REVIEWS_URL" \
+            --env-var "orderingUrl=$MOSAIC_ORDERING_URL" \
             --bail
     fi
     if [ $? -ne 0 ]; then
@@ -1484,7 +1657,7 @@ else
     step_ok 'postman collection'
 fi
 
-# -- 8. the two subgraphs still compose -------------------------------------
+# -- 8. the six subgraphs still compose -------------------------------------
 
 # wgc is a local dev dependency, pinned in package.json beside newman. It
 # composes from committed schema files and talks to nothing. It is looked for
@@ -1571,7 +1744,28 @@ chapter, not the assertion.'
         step_ok 'the composition errors chapter 9 prints are the ones wgc produces'
     fi
 
-    # -- 8c. chapter 10: a router in front of the two -----------------------
+    # -- 8b2. what @override does, which is chapter 12's subject ------------
+
+    # Nine cases, and none of them needs a service running: every one is a
+    # composition, because everything @override does happens at composition
+    # time. That is itself the finding the chapter leads with.
+    if [ ! -f "$OVERRIDE_CASES" ]; then
+        step_skip 'override cases' 'scripts/override-cases.mjs does not exist yet'
+    elif ! command -v node >/dev/null 2>&1; then
+        step_fail 'override cases' 'node is not on PATH; it is needed to run scripts/override-cases.mjs.'
+    else
+        node "$OVERRIDE_CASES"
+        if [ $? -ne 0 ]; then
+            step_fail 'override cases' 'scripts/override-cases.mjs failed.
+One of the @override behaviours chapter 12 describes has changed. The output
+above says which case and how. If it is the progressive one, wgc may have
+implemented the federation 2.7 label argument, and that is a rewrite of a
+section rather than a loosened assertion.'
+        fi
+        step_ok 'the nine @override behaviours chapter 12 prints are the ones wgc produces'
+    fi
+
+    # -- 8c. chapter 10: a router in front of the six -----------------------
 
     # The first section that asks the graph a question rather than asking a
     # service one. It runs here, after the composed config has been checked
@@ -1677,14 +1871,14 @@ above says which. Fix the chapter, not the assertion.'
                 "$NEWMAN_BIN" --no newman run "$ENTITIES_POSTMAN" \
                     --environment "$ENTITIES_POSTMAN_ENV" \
                     --env-var "routerUrl=$ROUTER_URL" \
-                    --env-var "mosaicUrl=$BASE_URL" \
+                    --env-var "pricingUrl=$MOSAIC_PRICING_URL" \
                     --env-var "catalogUrl=$CATALOG_SUBGRAPH_URL" \
                     --bail
             else
                 "$NEWMAN_BIN" run "$ENTITIES_POSTMAN" \
                     --environment "$ENTITIES_POSTMAN_ENV" \
                     --env-var "routerUrl=$ROUTER_URL" \
-                    --env-var "mosaicUrl=$BASE_URL" \
+                    --env-var "pricingUrl=$MOSAIC_PRICING_URL" \
                     --env-var "catalogUrl=$CATALOG_SUBGRAPH_URL" \
                     --bail
             fi
@@ -1735,54 +1929,88 @@ output above says which. Fix the chapter, not the assertion.'
             warm=$((warm + 1))
         done
 
-        for shipping_case in "plain:$EXPECTED_RESOLVERS_WITHOUT_SHIPPING:without shippingCost" \
-                             "shipping:$EXPECTED_RESOLVERS_WITH_SHIPPING:with shippingCost"; do
-            case_file="${shipping_case%%:*}"
-            case_rest="${shipping_case#*:}"
-            case_resolvers="${case_rest%%:*}"
-            case_label="${case_rest#*:}"
+        # Chapter 11 read one service's timeline. Chapter 12 reads six, and the
+        # reason is the whole chapter: the same query costs the same database
+        # work spread across four processes, and the two that do nothing have to
+        # be checked for doing nothing.
+        for storefront_case in "plain:without shippingCost" "shipping:with shippingCost"; do
+            case_file="${storefront_case%%:*}"
+            case_label="${storefront_case#*:}"
 
-            before="$(grep -c '[0-9] resolvers, [0-9]* SQL)' "$API_LOG" 2>/dev/null || true)"
+            if [ "$case_file" = "plain" ]; then
+                expected_rows="$STOREFRONT_WITHOUT_SHIPPING"
+            else
+                expected_rows="$STOREFRONT_WITH_SHIPPING"
+            fi
+
+            # Where every subgraph's log stood before the query, so that the
+            # lines this query produces can be told from the warm-up's. Recorded
+            # as "<name>:<count>" lines, because sh has no maps.
+            before_counts=""
+            for entry in $SUBGRAPHS; do
+                before_name="${entry%%:*}"
+                before_counts="$before_counts$before_name:$(grep -c '[0-9] resolvers, [0-9]* SQL)' "$(subgraph_log "$before_name")" 2>/dev/null || true)"$'\n'
+            done
+
             post_graphql "$ROUTER_URL" "$TEMP_DIR/storefront-$case_file.json" \
                 "$TEMP_DIR/storefront-$case_file.out.json" "storefront $case_label"
 
-            waited=0
-            timeline=""
-            while [ "$waited" -lt 75 ]; do
-                after="$(grep -c '[0-9] resolvers, [0-9]* SQL)' "$API_LOG" 2>/dev/null || true)"
-                if [ "${after:-0}" -gt "${before:-0}" ]; then
-                    timeline="$(grep -o '[0-9][0-9]* resolvers, [0-9][0-9]* SQL)' "$API_LOG" | tail -n 1)"
-                    break
+            for row in $expected_rows; do
+                row_name="${row%%:*}"
+                row_rest="${row#*:}"
+                row_resolvers="${row_rest%%:*}"
+                row_sql="${row_rest#*:}"
+                row_log="$(subgraph_log "$row_name")"
+                row_before="$(printf '%s' "$before_counts" | grep "^$row_name:" | cut -d: -f2)"
+
+                waited=0
+                timeline=""
+                while [ "$waited" -lt 75 ]; do
+                    after="$(grep -c '[0-9] resolvers, [0-9]* SQL)' "$row_log" 2>/dev/null || true)"
+                    if [ "${after:-0}" -gt "${row_before:-0}" ]; then
+                        timeline="$(grep -o '[0-9][0-9]* resolvers, [0-9][0-9]* SQL)' "$row_log" | tail -n 1)"
+                        break
+                    fi
+                    sleep 0.2
+                    waited=$((waited + 1))
+                done
+
+                if [ -z "$timeline" ]; then
+                    step_fail 'storefront cost' "$row_name logged no timeline for the storefront query $case_label,
+so either the router did not call it or it is not reporting.
+
+$(tail -n 40 "$row_log" 2>/dev/null)"
                 fi
-                sleep 0.2
-                waited=$((waited + 1))
+
+                got_resolvers="$(printf '%s' "$timeline" | sed 's/ resolvers.*//')"
+                got_sql="$(printf '%s' "$timeline" | sed 's/.*resolvers, //; s/ SQL)//')"
+
+                if [ "$got_resolvers" != "$row_resolvers" ]; then
+                    step_fail 'storefront cost' "$row_name reported $got_resolvers resolvers for the storefront query $case_label,
+and chapter 12 prints $row_resolvers."
+                fi
+                if [ "$got_sql" != "$row_sql" ]; then
+                    step_fail 'storefront cost' "$row_name reported $got_sql SQL commands for the storefront query $case_label,
+and chapter 12 prints $row_sql.
+
+A resolver that reached for its own DataLoader instead of the one its neighbour
+already uses would show up here and nowhere else."
+                fi
             done
 
-            if [ -z "$timeline" ]; then
-                step_fail 'shipping cost' "Mosaic logged no timeline for the storefront query $case_label.
-
-$(log_tail)"
-            fi
-
-            got_resolvers="$(printf '%s' "$timeline" | sed 's/ resolvers.*//')"
-            got_sql="$(printf '%s' "$timeline" | sed 's/.*resolvers, //; s/ SQL)//')"
-
-            if [ "$got_resolvers" != "$case_resolvers" ]; then
-                step_fail 'shipping cost' "The storefront query $case_label reported $got_resolvers resolvers,
-and chapter 11 prints $case_resolvers.
-
-The difference between the two rows is the chapter's claim: one resolver per
-product and nothing else."
-            fi
-            if [ "$got_sql" != "$EXPECTED_STOREFRONT_SQL" ]; then
-                step_fail 'shipping cost' "The storefront query $case_label reported $got_sql SQL commands,
-and chapter 11 prints $EXPECTED_STOREFRONT_SQL for both rows.
-
-A computed field that reaches for its own DataLoader instead of the one price
-already uses would show up here and nowhere else."
-            fi
+            # And the two that should have been left alone. This is the
+            # assertion that would catch the router fetching from a service the
+            # query never mentions.
+            for silent_name in $SILENT_FOR_STOREFRONT; do
+                silent_before="$(printf '%s' "$before_counts" | grep "^$silent_name:" | cut -d: -f2)"
+                silent_after="$(grep -c '[0-9] resolvers, [0-9]* SQL)' "$(subgraph_log "$silent_name")" 2>/dev/null || true)"
+                if [ "${silent_after:-0}" -ne "${silent_before:-0}" ]; then
+                    step_fail 'storefront cost' "$silent_name answered a request for the storefront query $case_label,
+and nothing in that query is its to answer."
+                fi
+            done
         done
-        step_ok "a computed field costs $((EXPECTED_RESOLVERS_WITH_SHIPPING - EXPECTED_RESOLVERS_WITHOUT_SHIPPING)) more resolvers and no more SQL"
+        step_ok 'the storefront costs 25 more resolvers in pricing with shippingCost, no more SQL anywhere, and nothing at all in accounts or ordering'
 
         # Down rather than stop, and now rather than in the trap, because the
         # federated-wire section below wants this port.

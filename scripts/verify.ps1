@@ -57,12 +57,14 @@
 
 [CmdletBinding()]
 param(
-    # The port Mosaic is started on. Matches docker-compose.yml and the http
-    # launch profile.
-    [int] $Port = 5100,
-
-    # The Catalog subgraph, extracted in chapter 8.
-    [int] $CatalogSubgraphPort = 5101,
+    # The first of Mosaic's six subgraph ports. They are consecutive from here,
+    # in the order federation/mosaic.yaml lists them - catalog, pricing,
+    # inventory, accounts, reviews, ordering - and they match docker-compose.yml
+    # and the six http launch profiles.
+    #
+    # It was two ports until chapter 12, and 5100 was the monolith's. Nothing
+    # listens on 5100 any more.
+    [int] $FirstSubgraphPort = 5101,
 
     # Chapter 7's federated-wire sample: two subgraphs on the host and the
     # Cosmo Router in a container. All three match the launch profiles, the
@@ -105,19 +107,48 @@ $ProgressPreference = 'SilentlyContinue'
 
 $RepoRoot           = Split-Path -Parent $PSScriptRoot
 $Solution           = Join-Path $RepoRoot 'Mosaic.slnx'
-$ApiProject         = Join-Path $RepoRoot 'src' 'Mosaic.Api' 'Mosaic.Api.csproj'
-$CommittedSchema    = Join-Path $RepoRoot 'schema' 'mosaic.graphql'
 $SamplesDir         = Join-Path $RepoRoot 'samples' 'three-approaches'
 $SampleSchemaDir    = Join-Path $RepoRoot 'schema' 'samples'
-$PostmanCollection  = Join-Path $RepoRoot 'postman' 'mosaic-federation.postman_collection.json'
-$PostmanEnvironment = Join-Path $RepoRoot 'postman' 'mosaic-federation.local.postman_environment.json'
-$BaseUrl            = "http://localhost:$Port"
+# Retired at chapter 12 and replaced, for the reason decision 54 gives about
+# the one before it: most of mosaic-federation's requests asked port 5100 for
+# something, and there is no port 5100.
+$PostmanCollection  = Join-Path $RepoRoot 'postman' 'mosaic-subgraphs.postman_collection.json'
+$PostmanEnvironment = Join-Path $RepoRoot 'postman' 'mosaic-subgraphs.local.postman_environment.json'
 
-# -- chapter 8's second subgraph ---------------------------------------------
+# -- the six subgraphs -------------------------------------------------------
 
-$CatalogProject     = Join-Path $RepoRoot 'src' 'Mosaic.Catalog' 'Mosaic.Catalog.csproj'
-$CatalogSchema      = Join-Path $RepoRoot 'schema' 'catalog.graphql'
-$CatalogSubgraphUrl = "http://localhost:$CatalogSubgraphPort"
+# One entry per service, in the order federation/mosaic.yaml lists them and in
+# the order chapter 12 extracted them. Everything below that used to be written
+# twice - once for Mosaic.Api and once for Mosaic.Catalog - is written once and
+# iterated, because six copies of a startup block is five chances to check one
+# service less thoroughly than the others.
+#
+# Ports are assigned from $FirstSubgraphPort rather than typed, so that a
+# machine with something already on 5101 can move all six with one switch.
+$Subgraphs = [ordered] @{}
+$subgraphNames = @('Catalog', 'Pricing', 'Inventory', 'Accounts', 'Reviews', 'Ordering')
+for ($i = 0; $i -lt $subgraphNames.Count; $i++) {
+    $name = $subgraphNames[$i]
+    $port = $FirstSubgraphPort + $i
+    $Subgraphs[$name.ToLowerInvariant()] = @{
+        Display   = $name
+        Project   = Join-Path $RepoRoot 'src' "Mosaic.$name" "Mosaic.$name.csproj"
+        Committed = Join-Path $RepoRoot 'schema' "$($name.ToLowerInvariant()).graphql"
+        Port      = $port
+        Url       = "http://localhost:$port"
+    }
+}
+
+# Named separately where a step talks to one service by name. The wire sample
+# further down has its own $CatalogUrl and $ReviewsUrl for two subgraphs that
+# have nothing to do with these, which is why every one of these carries the
+# Mosaic prefix.
+$MosaicCatalogUrl   = $Subgraphs['catalog'].Url
+$MosaicPricingUrl   = $Subgraphs['pricing'].Url
+$MosaicAccountsUrl  = $Subgraphs['accounts'].Url
+$MosaicReviewsUrl   = $Subgraphs['reviews'].Url
+$MosaicOrderingUrl  = $Subgraphs['ordering'].Url
+
 $FederationGraph    = Join-Path $RepoRoot 'federation' 'mosaic.yaml'
 
 # -- chapter 9's composition -------------------------------------------------
@@ -151,11 +182,20 @@ $EntitiesPostman    = Join-Path $RepoRoot 'postman' 'mosaic-entities.postman_col
 $EntitiesPostmanEnv = Join-Path $RepoRoot 'postman' 'mosaic-entities.local.postman_environment.json'
 $EntityCases        = Join-Path $RepoRoot 'scripts' 'entity-cases.mjs'
 
-# What a computed field costs the service that computes it. Chapter 11 prints
-# these four numbers, so the gate produces them: the same storefront query
-# through the router with and without Product.shippingCost, read off Mosaic's
-# own request timeline. They are counts rather than timings, which is why they
-# belong in a gate at all - decision 62 keeps milliseconds out of one.
+# -- chapter 12's @override --------------------------------------------------
+
+# Nine cases: what the composer does with @override in every shape chapter 12
+# describes, including the two it rejects, the one it warns about, and the
+# federation 2.7 label wgc does not implement. Same arrangement as chapter 9's
+# and chapter 10's case scripts - one implementation, called by both verify
+# scripts - and the same edit discipline.
+$OverrideCases = Join-Path $RepoRoot 'scripts' 'override-cases.mjs'
+
+# What the storefront query costs, and where. Chapter 12 prints these numbers,
+# so the gate produces them: the same query through the router with and without
+# Product.shippingCost, read off each subgraph's own request timeline. They are
+# counts rather than timings, which is why they belong in a gate at all -
+# decision 62 keeps milliseconds out of one.
 #
 # The selection deliberately stops short of Product.reviews. A resolver runs
 # per review author, so the count of a query that walks the reviews depends on
@@ -163,6 +203,11 @@ $EntityCases        = Join-Path $RepoRoot 'scripts' 'entity-cases.mjs'
 # these numbers would be true only of a database nothing had written to yet,
 # which is the opposite of what a gate wants. averageRating still reaches the
 # review table, so the statement count is honest.
+#
+# Chapter 11 asserted two numbers off one service, because one service was all
+# that could report. There are four rows now because there are four services
+# doing the work, and two of the six do none of it. Catalog's row is the one
+# chapter 11 could not print at all.
 $ShippingStorefrontQuery =
     '{ browseProducts(first: 25) { nodes { title price { amount currency } ' +
     'shippingCost { amount currency } availableQuantity averageRating } } }'
@@ -171,13 +216,31 @@ $PlainStorefrontQuery =
     '{ browseProducts(first: 25) { nodes { title price { amount currency } ' +
     'availableQuantity averageRating } } }'
 
-# 76 is one root field plus three resolvers for each of 25 products; 101 is the
-# same with one more per product. The statement count does not move, because
-# shippingCost takes the same DataLoader price does and finds the key already
-# in the batch.
-$ExpectedResolversWithoutShipping = 76
-$ExpectedResolversWithShipping    = 101
-$ExpectedStorefrontSql            = 3
+# Resolvers and statements per subgraph. Catalog runs the root field and one
+# projected query; each of the other three runs one _entities field plus one
+# resolver per product, behind one batched statement. Pricing runs two per
+# product when shippingCost is selected, and still one statement, because both
+# fields take the same DataLoader.
+#
+# A subgraph absent from these tables is asserted to have reported nothing at
+# all, which is the assertion that would catch the router fetching from a
+# service it has no reason to call.
+$ExpectedStorefrontWithout = [ordered] @{
+    catalog   = @{ Resolvers = 1;  Sql = 1 }
+    pricing   = @{ Resolvers = 26; Sql = 1 }
+    inventory = @{ Resolvers = 26; Sql = 1 }
+    reviews   = @{ Resolvers = 26; Sql = 1 }
+}
+
+$ExpectedStorefrontWith = [ordered] @{
+    catalog   = @{ Resolvers = 1;  Sql = 1 }
+    pricing   = @{ Resolvers = 51; Sql = 1 }
+    inventory = @{ Resolvers = 26; Sql = 1 }
+    reviews   = @{ Resolvers = 26; Sql = 1 }
+}
+
+# The two that answer nothing for this query, and should say nothing about it.
+$SilentForStorefront = @('accounts', 'ordering')
 
 # -- chapter 7's federated-wire sample ---------------------------------------
 
@@ -230,59 +293,92 @@ $SampleApproaches = [ordered] @{
     'schema-first'         = 'Mosaic.Sample.SchemaFirst'
 }
 
-# The chapter's query and the numbers it produces.
+# The book's oldest query and the numbers it produces.
 #
 # Chapters 2 to 5 asked this of one service:
 #
 #   { products { title reviews(first: 12) { nodes { rating author { displayName } } } } }
 #
-# Neither service can answer it since chapter 8. `products` is Catalog's and
-# `reviews` is Mosaic's, and until chapter 10 puts a router in front of them
-# nothing joins the two. So the question is asked in two halves, which is
-# exactly what chapter 8 is about.
+# No service can answer it since chapter 8, and after chapter 12 it takes three
+# to answer it: `products` is Catalog's, `reviews` is Reviews', and the author
+# behind each review is Accounts'. The question is still asked in pieces here,
+# without a router, because a subgraph you cannot test on its own is a subgraph
+# you will debug through a router.
 #
-# The Catalog half is the plain root field.
+# The Catalog piece is the plain root field.
 $CatalogQuery         = '{ products { id title } }'
 $ExpectedProductCount = 25
 
-# The Mosaic half is the same nested selection, reached the way a router would
-# reach it: one _entities call carrying every product key Catalog just handed
-# over. first: 12 is not arbitrary - the most reviewed product has exactly 12,
-# so this still asks for every review in the seed data and the total is still
-# 120.
-$MosaicEntitiesQuery =
+# The Reviews piece is the nested selection, reached the way a router reaches
+# it: one _entities call carrying every product key Catalog just handed over.
+# first: 12 is not arbitrary - the most reviewed product has exactly 12, so this
+# still asks for every review in the seed data and the total is still 120.
+#
+# The author is a key in a wrapper now rather than a customer, so this selects
+# the identifier and stops. Chapter 12 is where that field stopped costing
+# Reviews anything at all.
+$ReviewsEntitiesQuery =
     'query($representations: [_Any!]!) { _entities(representations: $representations) ' +
-    '{ ... on Product { reviews(first: 12) { nodes { rating author { id displayName } } } } } }'
+    '{ ... on Product { reviews(first: 12) { nodes { rating author { id } } } } } }'
 $ExpectedReviewCount = 120
 
-# The resolver count did not move, and that is the point. It was one root field
-# plus 25 review connections plus 120 authors; it is now one _entities field
-# plus 25 plus 120. Same shape, same number, different first term.
-$ExpectedResolverCount = 146
+# One _entities field and 25 review connections. It was 146 from chapter 2 to
+# chapter 11 and the missing 120 are the authors, which is a stranger result
+# than it looks and is worth being exact about.
+#
+# The engine still produces 120 authors. What it no longer does is run 120
+# resolver tasks to get them. GetAuthor takes a parent and returns a new object
+# with no await in it, so HotChocolate compiles it to a PureFieldDelegate and
+# runs it inline; the ResolveFieldValue diagnostic event is raised inside
+# ResolverTask.Execute and BatchResolverTask and nowhere else, so an inlined
+# field is never counted. Read at tag 16.6.0, commit 8fea46e.
+#
+# Which means this number measures resolver tasks rather than fields resolved,
+# and has done since chapter 3 without anybody noticing, because until chapter
+# 12 every field on this path did something asynchronous.
+$ExpectedReviewsResolverCount = 26
 
-# The statement count did move, by exactly one. As a monolith this query cost
-# three: the products, their reviews, and the twelve distinct authors. Mosaic
-# no longer fetches the products, so it costs two, and the one that left is the
-# statement Catalog runs instead.
-$ExpectedSqlCommandCount = 2
+# One statement, and it was two at tag ch11. The pair used to be the reviews
+# batch and the authors batch; the authors batch is Accounts' now, and Reviews
+# is left with the one query it was always going to run.
+#
+# This is the clearest single number chapter 12 produces. It is not a saving:
+# the customers are still fetched, in another process, off another database,
+# behind an HTTP call the router makes. What the number measures is that the
+# work left this service, which is the only thing an extraction can ever do.
+$ExpectedReviewsSqlCount = 1
 
-# The lookup counter follows the statement count for the same reason: Mosaic
-# asks its own domains two questions, the reviews batch and the authors batch,
-# and no longer asks Catalog anything because it cannot.
-$ExpectedLookupCount = 2
+# The lookup counter follows it exactly, for the reason chapter 4 gave: they are
+# the same number whenever one question produces one statement.
+$ExpectedReviewsLookupCount = 1
 
-# Catalog's reference resolver sits behind the same DataLoader Product.node
-# uses, so a batch of any size costs one statement. This is the assertion that
-# would catch a subgraph resolving representations one at a time, which no
-# assertion on the answer could see.
+# The third piece, and the one chapter 12 added: the twelve distinct customers
+# behind those hundred and twenty reviews, as Accounts resolves them. This is
+# the batch that used to happen inside the monolith and now crosses a boundary.
+$AccountsEntitiesQuery =
+    'query($representations: [_Any!]!) { _entities(representations: $representations) ' +
+    '{ ... on Customer { id displayName email } } }'
+$ExpectedDistinctCustomers = 12
+
+# Catalog's reference resolver sits behind a DataLoader, so a batch of any size
+# costs one statement. This is the assertion that would catch a subgraph
+# resolving representations one at a time, which no assertion on the answer
+# could see.
 $CatalogEntitiesQuery =
     'query($representations: [_Any!]!) { _entities(representations: $representations) ' +
     '{ ... on Product { title sku } } }'
 
-# An order is the other direction: Mosaic hands out a product key it cannot
-# resolve itself. The orders query below also selects Order.total, which is the
-# regression test for the Include that was missing from chapter 4 until chapter
-# 8 - total throws when the lines are not loaded, so selecting it is enough.
+# Pricing answers for the same keys, which is the assertion that would catch
+# the four subgraphs disagreeing about what a product key looks like.
+$PricingEntitiesQuery =
+    'query($representations: [_Any!]!) { _entities(representations: $representations) ' +
+    '{ ... on Product { price { amount currency } } } }'
+
+# An order is the other direction: Ordering hands out a product key and a
+# customer key it cannot resolve itself. The orders query also selects
+# Order.total, which is the regression test for the Include that was missing
+# from chapter 4 until chapter 8 - total throws when the lines are not loaded,
+# so selecting it is enough.
 
 # How many times the verify query is sent, and how far above the expected
 # number a single run is allowed to land. See the comment beside the repeat
@@ -480,8 +576,8 @@ function Get-LogTail {
 # Verification
 # ---------------------------------------------------------------------------
 
-$apiProcess = $null
-$catalogProcess = $null
+# One process per subgraph, recorded on the $Subgraphs entry as each one starts,
+# so the finally block can stop whatever got as far as starting.
 $tempDir = $null
 $startedDatabase = $false
 $wireProcesses = @{}
@@ -560,13 +656,9 @@ try {
 
     # -- 3. schema drift ----------------------------------------------------
 
-    # Two schemas since chapter 8, checked the same way. Each subgraph is a
-    # separate contract with the composer, so a drift in either is a drift.
-    $Subgraphs = [ordered] @{
-        'mosaic'  = @{ Project = $ApiProject;     Committed = $CommittedSchema; Url = $BaseUrl;     Port = $Port }
-        'catalog' = @{ Project = $CatalogProject; Committed = $CatalogSchema;   Url = $CatalogSubgraphUrl;  Port = $CatalogSubgraphPort }
-    }
-
+    # Two schemas from chapter 8 and six since chapter 12, checked the same way.
+    # Each subgraph is a separate contract with the composer, so a drift in any
+    # of them is a drift.
     foreach ($name in $Subgraphs.Keys) {
         $subgraph = $Subgraphs[$name]
         $exportedSchema = Join-Path $tempDir "$name.exported.graphql"
@@ -592,14 +684,14 @@ try {
                 ''
                 'If it is not, a dependency changed the schema behind your back. That is'
                 'what this check exists to catch. Since chapter 8 it also catches a'
-                'change to one subgraph that would break composition with the other.'
+                'change to one subgraph that would break composition with the others.'
                 ''
                 (Get-SchemaDiff -ExpectedPath $subgraph.Committed -ActualPath $exportedSchema -WorkDir $tempDir -Label $name)))
         }
 
         $subgraph.Exported = $exportedSchema
     }
-    Write-Ok 'both subgraph schemas match the committed snapshots'
+    Write-Ok "all $($Subgraphs.Count) subgraph schemas match the committed snapshots"
 
     # -- 4. the three sample projects --------------------------------------
 
@@ -727,7 +819,7 @@ try {
         Write-Ok 'the placement sample still leaks exactly the field chapter 8 prints'
     }
 
-    # -- 5. start both subgraphs and ask the chapter's question in halves ---
+    # -- 5. start the six subgraphs ----------------------------------------
 
     foreach ($name in $Subgraphs.Keys) {
         if (Test-PortInUse $Subgraphs[$name].Port) {
@@ -736,16 +828,6 @@ try {
                 'Stop it first: a docker compose stack, a debugger, or an earlier run of this script.'))
         }
     }
-
-    $apiStdout = Join-Path $tempDir 'api.out.log'
-    $apiStderr = Join-Path $tempDir 'api.err.log'
-    $catalogStdout = Join-Path $tempDir 'catalog.out.log'
-    $catalogStderr = Join-Path $tempDir 'catalog.err.log'
-
-    # The URL goes in through the environment rather than the command line:
-    # RunWithGraphQLCommands parses the process arguments itself, and it should
-    # not have to know about --urls.
-    $env:ASPNETCORE_URLS = $BaseUrl
 
     # --no-launch-profile means launchSettings.json is ignored, and without it
     # ASP.NET Core defaults to Production. HotChocolate 16 answers introspection
@@ -757,96 +839,70 @@ try {
     # Chapter 5 gave Mosaic a mutation, and the Postman collection uses it. A
     # verification run therefore leaves a review behind, and the next run would
     # start with 121 of them and fail the seeded-count assertion above. So each
-    # run starts from a dropped and reseeded schema. That costs a second or two
+    # run starts from a dropped and reseeded database. That costs a second or two
     # and buys a gate whose result does not depend on how many times it has been
     # run before, which is the only kind worth having.
+    #
+    # One variable resets all six, which is the whole reason every seeder spells
+    # it the same way.
     $env:MOSAIC_RESET_DATABASE = '1'
-    $apiProcess = Start-Process `
-        -FilePath 'dotnet' `
-        -ArgumentList @('run', '--project', $ApiProject, '-c', 'Release', '--no-build', '--no-launch-profile') `
-        -WorkingDirectory $RepoRoot `
-        -RedirectStandardOutput $apiStdout `
-        -RedirectStandardError $apiStderr `
-        -NoNewWindow `
-        -PassThru
 
-    $healthDeadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
-    $healthy = $false
-    while ((Get-Date) -lt $healthDeadline) {
-        if ($apiProcess.HasExited) {
-            Stop-Verify 'start api' (Join-Lines @(
-                "The service exited with code $($apiProcess.ExitCode) during start-up."
-                ''
-                (Get-LogTail $apiStdout)
-                (Get-LogTail $apiStderr)))
-        }
+    # One at a time rather than all six at once, because each of them creates and
+    # seeds a database on the way up and doing that in sequence makes a failure
+    # readable. It also costs the slowest part of a run: six .NET services
+    # starting one after another.
+    foreach ($name in $Subgraphs.Keys) {
+        $subgraph = $Subgraphs[$name]
+        $subgraph.Stdout = Join-Path $tempDir "$name.out.log"
+        $subgraph.Stderr = Join-Path $tempDir "$name.err.log"
 
-        try {
-            $health = Invoke-WebRequest -Uri "$BaseUrl/health" -TimeoutSec 5 -SkipHttpErrorCheck
-            if ($health.StatusCode -eq 200) {
-                $healthy = $true
-                break
+        # The URL goes in through the environment rather than the command line:
+        # RunWithGraphQLCommands parses the process arguments itself, and it
+        # should not have to know about --urls.
+        $env:ASPNETCORE_URLS = $subgraph.Url
+
+        $subgraph.Process = Start-Process `
+            -FilePath 'dotnet' `
+            -ArgumentList @('run', '--project', $subgraph.Project, '-c', 'Release', '--no-build', '--no-launch-profile') `
+            -WorkingDirectory $RepoRoot `
+            -RedirectStandardOutput $subgraph.Stdout `
+            -RedirectStandardError $subgraph.Stderr `
+            -NoNewWindow `
+            -PassThru
+
+        $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+        $healthy = $false
+        while ((Get-Date) -lt $deadline) {
+            if ($subgraph.Process.HasExited) {
+                Stop-Verify "start $name" (Join-Lines @(
+                    "The $name subgraph exited with code $($subgraph.Process.ExitCode) during start-up."
+                    ''
+                    (Get-LogTail $subgraph.Stdout)
+                    (Get-LogTail $subgraph.Stderr)))
             }
-        } catch {
-            # Not listening yet. Keep polling until the deadline.
-        }
 
-        Start-Sleep -Milliseconds 500
-    }
-
-    if (-not $healthy) {
-        Stop-Verify 'start api' (Join-Lines @(
-            "$BaseUrl/health did not answer within $StartupTimeoutSeconds seconds."
-            ''
-            (Get-LogTail $apiStdout)
-            (Get-LogTail $apiStderr)))
-    }
-    Write-Ok "api answering on $BaseUrl/health"
-
-    # -- 5b. the Catalog subgraph ------------------------------------------
-
-    # Started after Mosaic rather than beside it, because both of them create
-    # and seed a database on the way up and doing that one at a time makes a
-    # failure readable.
-    $env:ASPNETCORE_URLS = $CatalogSubgraphUrl
-    $catalogProcess = Start-Process `
-        -FilePath 'dotnet' `
-        -ArgumentList @('run', '--project', $CatalogProject, '-c', 'Release', '--no-build', '--no-launch-profile') `
-        -WorkingDirectory $RepoRoot `
-        -RedirectStandardOutput $catalogStdout `
-        -RedirectStandardError $catalogStderr `
-        -NoNewWindow `
-        -PassThru
-
-    $catalogDeadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
-    $catalogHealthy = $false
-    while ((Get-Date) -lt $catalogDeadline) {
-        if ($catalogProcess.HasExited) {
-            Stop-Verify 'start catalog' (Join-Lines @(
-                "The Catalog subgraph exited with code $($catalogProcess.ExitCode) during start-up."
-                ''
-                (Get-LogTail $catalogStdout)
-                (Get-LogTail $catalogStderr)))
-        }
-        try {
-            $health = Invoke-WebRequest -Uri "$CatalogSubgraphUrl/health" -TimeoutSec 5 -SkipHttpErrorCheck
-            if ($health.StatusCode -eq 200) {
-                $catalogHealthy = $true
-                break
+            try {
+                $health = Invoke-WebRequest -Uri "$($subgraph.Url)/health" -TimeoutSec 5 -SkipHttpErrorCheck
+                if ($health.StatusCode -eq 200) {
+                    $healthy = $true
+                    break
+                }
+            } catch {
+                # Not listening yet. Keep polling until the deadline.
             }
-        } catch {
-            # Not listening yet.
+
+            Start-Sleep -Milliseconds 500
         }
-        Start-Sleep -Milliseconds 500
+
+        if (-not $healthy) {
+            Stop-Verify "start $name" (Join-Lines @(
+                "$($subgraph.Url)/health did not answer within $StartupTimeoutSeconds seconds."
+                ''
+                (Get-LogTail $subgraph.Stdout)
+                (Get-LogTail $subgraph.Stderr)))
+        }
+        Write-Ok "$name answering on $($subgraph.Url)/health"
     }
-    if (-not $catalogHealthy) {
-        Stop-Verify 'start catalog' (Join-Lines @(
-            "$CatalogSubgraphUrl/health did not answer within $StartupTimeoutSeconds seconds."
-            ''
-            (Get-LogTail $catalogStdout)
-            (Get-LogTail $catalogStderr)))
-    }
-    Write-Ok "catalog answering on $CatalogSubgraphUrl/health"
 
     # -- 5c. what each subgraph publishes ----------------------------------
 
@@ -880,14 +936,18 @@ try {
                     -WorkDir $tempDir -Label "published-$name")))
         }
 
-        if ($publishedSdl -notmatch '@key\(fields: "id"\)') {
+        # Deliberately not anchored on the closing bracket. Two of the six key
+        # an entity they can only reference - Ordering's Product and Customer
+        # both say resolvable: false - and a check that missed those would be
+        # checking four subgraphs and reporting on six.
+        if ($publishedSdl -notmatch '@key\(fields: "id"') {
             Stop-Verify "$name published schema" (Join-Lines @(
                 "The $name subgraph publishes no @key(fields: `"id`")."
                 'A schema printed without its key directives composes into a graph with'
                 'no entities in it, which is the failure chapter 7 warned about.'))
         }
     }
-    Write-Ok 'both subgraphs publish the committed schemas through _service'
+    Write-Ok "all $($Subgraphs.Count) subgraphs publish the committed schemas through _service"
 
     # -- 5d. the catalog half ----------------------------------------------
 
@@ -920,7 +980,7 @@ try {
         return $parsed
     }
 
-    $catalogPayload = Invoke-Gql -Url $CatalogSubgraphUrl -Query $CatalogQuery -Step 'catalog products'
+    $catalogPayload = Invoke-Gql -Url $MosaicCatalogUrl -Query $CatalogQuery -Step 'catalog products'
     $products = @($catalogPayload.data.products)
 
     if ($products.Count -ne $ExpectedProductCount) {
@@ -929,14 +989,14 @@ try {
     Write-Ok "catalog answered $ExpectedProductCount products"
 
     # Every key exactly as Catalog gave it. Re-encoding one here would test this
-    # script's idea of the format rather than the two services' agreement about
+    # script's idea of the format rather than the six services' agreement about
     # it, which is the only thing that matters.
     $representations = @($products | ForEach-Object { @{ __typename = 'Product'; id = $_.id } })
 
-    # -- 5e. the mosaic half, through _entities ----------------------------
+    # -- 5e. the Reviews half, through _entities ---------------------------
 
-    $entitiesPayload = Invoke-Gql -Url $BaseUrl -Query $MosaicEntitiesQuery `
-        -Variables @{ representations = $representations } -Step 'mosaic _entities'
+    $entitiesPayload = Invoke-Gql -Url $MosaicReviewsUrl -Query $ReviewsEntitiesQuery `
+        -Variables @{ representations = $representations } -Step 'reviews _entities'
 
     $entities = @($entitiesPayload.data._entities)
     if ($entities.Count -ne $ExpectedProductCount) {
@@ -955,16 +1015,63 @@ try {
         Stop-Verify 'review count' (Join-Lines @(
             "Expected $ExpectedReviewCount reviews across all representations, got $reviewCount."
             'This is the number chapters 2 to 5 measured through Query.products. The'
-            'field it arrives through changed in chapter 8; the answer did not.'))
+            'field it arrives through changed in chapter 8, the service that owns it'
+            'changed in chapter 12, and the answer has not changed at all.'))
     }
-    Write-Ok "mosaic answered $ExpectedProductCount representations with $ExpectedReviewCount reviews"
+    Write-Ok "reviews answered $ExpectedProductCount representations with $ExpectedReviewCount reviews"
+
+    # -- 5e2. the Accounts half, which chapter 12 created -------------------
+
+    # Every author key those reviews carried, handed to the service that owns
+    # customers. Inside the monolith this was a DataLoader call; it is an
+    # _entities call across a network now, and it is the clearest single measure
+    # of what the split moved.
+    $authorKeys = @($entities.reviews.nodes.author.id | Where-Object { $_ } | Select-Object -Unique)
+    if ($authorKeys.Count -ne $ExpectedDistinctCustomers) {
+        Stop-Verify 'author keys' (Join-Lines @(
+            "Expected $ExpectedDistinctCustomers distinct customers behind $ExpectedReviewCount reviews, got $($authorKeys.Count)."
+            'Reviews hands back a key in a wrapper and resolves no customer at all'
+            'since chapter 12, so this is a count of what it stored rather than of'
+            'what it looked up.'))
+    }
+
+    $customerReps = @($authorKeys | ForEach-Object { @{ __typename = 'Customer'; id = $_ } })
+    $customersPayload = Invoke-Gql -Url $MosaicAccountsUrl -Query $AccountsEntitiesQuery `
+        -Variables @{ representations = $customerReps } -Step 'accounts _entities'
+
+    $customers = @($customersPayload.data._entities)
+    if ($customers.Count -ne $ExpectedDistinctCustomers) {
+        Stop-Verify 'customer count' "Sent $($customerReps.Count) customer representations, got $($customers.Count) back."
+    }
+    if (@($customers | Where-Object { -not $_.displayName }).Count -gt 0) {
+        Stop-Verify 'customer count' (Join-Lines @(
+            'Accounts answered a null entity for a key Reviews handed out.'
+            'Both services encode a customer identifier the same way or they do not'
+            'share an entity at all, and CustomerKey.TryDecode is where that'
+            'agreement is written down twice.'))
+    }
+    Write-Ok "accounts resolved all $ExpectedDistinctCustomers customer keys reviews handed out"
+
+    # -- 5e3. Pricing answers for the same product keys ---------------------
+
+    $pricesPayload = Invoke-Gql -Url $MosaicPricingUrl -Query $PricingEntitiesQuery `
+        -Variables @{ representations = $representations } -Step 'pricing _entities'
+    $prices = @($pricesPayload.data._entities)
+    if ($prices.Count -ne $ExpectedProductCount -or @($prices | Where-Object { -not $_.price }).Count -gt 0) {
+        Stop-Verify 'pricing _entities' (Join-Lines @(
+            "Pricing answered $($prices.Count) entities for $ExpectedProductCount representations,"
+            "$(@($prices | Where-Object { -not $_.price }).Count) of them without a price."
+            'Four subgraphs now decode the same product key with four copies of the'
+            'same file. This is the assertion that catches one of them drifting.'))
+    }
+    Write-Ok "pricing priced all $ExpectedProductCount representations catalog handed out"
 
     # A key that is not one of ours: a null entity and no errors key. The raw
     # Guid is the interesting case, because that is what this identifier looked
     # like before chapter 5 made it a global object identifier.
     foreach ($badKey in @('not-a-key', 'a0000000-0000-4000-8000-000000000001')) {
         $badResponse = Invoke-WebRequest `
-            -Uri "$CatalogSubgraphUrl/graphql" -Method Post -ContentType 'application/json' `
+            -Uri "$MosaicCatalogUrl/graphql" -Method Post -ContentType 'application/json' `
             -Headers @{ Accept = 'application/json' } `
             -Body (@{
                 query = $CatalogEntitiesQuery
@@ -991,11 +1098,11 @@ try {
 
     # -- 5f. one batch, one statement --------------------------------------
 
-    # Catalog has no request timeline of its own, so this is asserted from the
-    # answer rather than from a counter: 25 representations in, 25 titles out,
-    # in order. The statement count behind it is measured in the chapter's
-    # research file, not here.
-    $catalogEntities = Invoke-Gql -Url $CatalogSubgraphUrl -Query $CatalogEntitiesQuery `
+    # Asserted from the answer rather than from a counter: 25 representations
+    # in, 25 titles out, in order. Catalog does have a request timeline since
+    # chapter 12, and the statement count is checked further down with the other
+    # five; what this step is for is the ordering, which no counter can see.
+    $catalogEntities = Invoke-Gql -Url $MosaicCatalogUrl -Query $CatalogEntitiesQuery `
         -Variables @{ representations = $representations } -Step 'catalog _entities'
 
     $resolved = @($catalogEntities.data._entities)
@@ -1015,19 +1122,21 @@ try {
 
     # -- 5g. the other direction -------------------------------------------
 
-    # An order line hands out a product key Mosaic cannot resolve itself. The
-    # total is the regression test for the Include that was missing from
-    # chapter 4 until chapter 8: Order.total throws when the lines are not
-    # loaded, and nothing in the collection had ever asked for one.
-    # Mosaic has no root field that lists customers, so the keys come out of
-    # the answer above: every review carries its author. That is worth noticing
-    # rather than working around. Since chapter 8 every entry into this service
-    # starts either at one of its two root fields or at a key somebody else is
-    # holding.
+    # An order line hands out a product key Ordering cannot resolve itself, and
+    # an order hands out a customer key it cannot resolve either. The total is
+    # the regression test for the Include that was missing from chapter 4 until
+    # chapter 8: Order.total throws when the lines are not loaded, and nothing
+    # in the collection had ever asked for one.
+    #
+    # There is still no root field that lists customers, so the keys come out of
+    # the answer above: every review carries its author. Since chapter 12 that
+    # is a key rather than a customer, which makes the point sharper rather than
+    # weaker - it means Reviews and Ordering agree about how a customer is
+    # spelled without either of them ever having seen one.
     #
     # Seven of the twelve seeded customers have no orders at all, so this walks
     # the authors until it finds one who does rather than assuming.
-    $customerKeys = @($entities.reviews.nodes.author.id | Select-Object -Unique)
+    $customerKeys = @($authorKeys)
     if ($customerKeys.Count -lt 1) {
         Stop-Verify 'orders' 'No review carried an author, so there is no customer key to follow.'
     }
@@ -1035,7 +1144,7 @@ try {
     $orders = @()
     $customerKey = $null
     foreach ($candidate in $customerKeys) {
-        $ordersPayload = Invoke-Gql -Url $BaseUrl `
+        $ordersPayload = Invoke-Gql -Url $MosaicOrderingUrl `
             -Query ("{ ordersByCustomer(customerId: `"$candidate`") " +
                     '{ total { amount } lines { quantity product { id } } } }') `
             -Step 'orders'
@@ -1066,8 +1175,8 @@ try {
     if ($representations.id -notcontains $lineProductKey -and $products.id -notcontains $lineProductKey) {
         Stop-Verify 'order lines' (Join-Lines @(
             "An order line answered product key '$lineProductKey', which is not one of"
-            'the keys Catalog handed out. The two services encode the same identifier'
-            'the same way or they do not share an entity at all.'))
+            'the keys Catalog handed out. Four services encode the same identifier the'
+            'same way or they do not share an entity at all.'))
     }
     Write-Ok 'an order line answers a product key Catalog also answers'
 
@@ -1087,19 +1196,22 @@ try {
     # single split batch. A service whose DataLoaders had been removed could
     # satisfy neither.
     for ($i = 1; $i -lt $VerifyQueryRuns; $i++) {
-        Invoke-Gql -Url $BaseUrl -Query $MosaicEntitiesQuery `
-            -Variables @{ representations = $representations } -Step 'mosaic _entities' | Out-Null
+        Invoke-Gql -Url $MosaicReviewsUrl -Query $ReviewsEntitiesQuery `
+            -Variables @{ representations = $representations } -Step 'reviews _entities' | Out-Null
     }
 
     # -- 6. the lookup count -----------------------------------------------
 
-    # The middleware logs the total after the response has been written, so the
-    # line can land a moment after the HTTP call returns.
+    # Read off Reviews rather than off the monolith, because Reviews is the
+    # service that answered the query above. The middleware logs the total after
+    # the response has been written, so the line can land a moment after the
+    # HTTP call returns.
+    $reviewsStdout = $Subgraphs['reviews'].Stdout
     $logDeadline = (Get-Date).AddSeconds(15)
     $loggedCounts = @()
     while ((Get-Date) -lt $logDeadline) {
         $loggedCounts = @(
-            [regex]::Matches((Get-LogText $apiStdout), 'Service lookups this request: (\d+)') |
+            [regex]::Matches((Get-LogText $reviewsStdout), 'Service lookups this request: (\d+)') |
                 ForEach-Object { $_.Groups[1].Value })
         if ($loggedCounts.Count -gt 0) {
             break
@@ -1109,25 +1221,26 @@ try {
 
     if ($loggedCounts.Count -eq 0) {
         Stop-Verify 'lookup count' (Join-Lines @(
-            'The service never logged a lookup count for the query.'
+            'Reviews never logged a lookup count for the query.'
             'Either the counting middleware is gone or the log level hides it.'
+            'UseMosaicServiceDefaults() is what installs it, in every one of the six.'
             ''
-            (Get-LogTail $apiStdout)))
+            (Get-LogTail $reviewsStdout)))
     }
 
-    if ($loggedCounts -notcontains "$ExpectedLookupCount") {
+    if ($loggedCounts -notcontains "$ExpectedReviewsLookupCount") {
         Stop-Verify 'lookup count' (Join-Lines @(
-            "Expected the service to log 'Service lookups this request: $ExpectedLookupCount'."
+            "Expected Reviews to log 'Service lookups this request: $ExpectedReviewsLookupCount'."
             "It logged: $($loggedCounts -join ', ')."
             ''
             'That number is quoted in the book. It was 146 through chapters 2 and 3'
-            'and at tag ch04-ef, 3 once chapter 4 added DataLoaders, and 2 since'
-            'chapter 8 took the product lookup out of this service altogether. If it'
-            'moved again, either a DataLoader stopped batching or a resolver went'
-            'back to asking a service directly.'))
+            'and at tag ch04-ef, 3 once chapter 4 added DataLoaders, 2 once chapter 8'
+            'took the product lookup out of the monolith, and 1 since chapter 12 gave'
+            'the authors to Accounts. If it moved, either a DataLoader stopped'
+            'batching or a resolver went back to asking a service directly.'))
     }
 
-    $lookupCeiling = $ExpectedLookupCount + $SplitBatchAllowance
+    $lookupCeiling = $ExpectedReviewsLookupCount + $SplitBatchAllowance
     $tooManyLookups = @($loggedCounts | Where-Object { [int] $_ -gt $lookupCeiling })
     if ($tooManyLookups.Count -gt 0) {
         Stop-Verify 'lookup count' (Join-Lines @(
@@ -1137,13 +1250,32 @@ try {
             'again. More than that is a resolver that is not going through a'
             'DataLoader at all.'))
     }
-    Write-Ok "service logged 'Service lookups this request: $ExpectedLookupCount'"
+    Write-Ok "reviews logged 'Service lookups this request: $ExpectedReviewsLookupCount'"
 
     # -- 6b. the request pipeline ------------------------------------------
 
     # The pipeline is logged once, while the schema is being built, so by the
     # time a query has been answered these lines are already there.
-    $logText = Get-LogText $apiStdout
+    #
+    # Checked on every one of the six since chapter 12. The list is chapter 3's
+    # and none of the six should differ from it: they all call the same
+    # AddMosaicSubgraph, and a service that assembled a different pipeline would
+    # be a service whose registrations had drifted from the platform's.
+    foreach ($name in $Subgraphs.Keys) {
+        $subgraphPipeline = @(
+            [regex]::Matches((Get-LogText $Subgraphs[$name].Stdout), '(?m)^\s+\d+\. (\S+)\s*$') |
+                ForEach-Object { $_.Groups[1].Value })
+        if ($subgraphPipeline.Count -ne $ExpectedPipeline.Count) {
+            Stop-Verify 'request pipeline' (Join-Lines @(
+                "The $name subgraph assembled $($subgraphPipeline.Count) middleware, not $($ExpectedPipeline.Count)."
+                "Found: $($subgraphPipeline -join ', ')."
+                ''
+                'All six call AddMosaicSubgraph and AddMosaicPipelineReport, so a'
+                'difference here is a difference in one service''s registrations.'))
+        }
+    }
+
+    $logText = Get-LogText $reviewsStdout
 
     $loggedPipeline = @(
         [regex]::Matches($logText, '(?m)^\s+\d+\. (\S+)\s*$') |
@@ -1152,10 +1284,10 @@ try {
     if ($loggedPipeline.Count -eq 0) {
         Stop-Verify 'request pipeline' (Join-Lines @(
             'The service never logged its request pipeline.'
-            'AddPipelineReport() is what writes it; check it is still registered'
+            'AddMosaicPipelineReport() is what writes it; check it is still registered'
             'in Program.cs, and registered after AddGraphQL().'
             ''
-            (Get-LogTail $apiStdout)))
+            (Get-LogTail $reviewsStdout)))
     }
 
     if ($loggedPipeline.Count -ne $ExpectedPipeline.Count) {
@@ -1185,7 +1317,7 @@ try {
     $loggedResolvers = @()
     while ((Get-Date) -lt $timelineDeadline) {
         $loggedResolvers = @(
-            [regex]::Matches((Get-LogText $apiStdout), '(\d+) resolvers,') |
+            [regex]::Matches((Get-LogText $reviewsStdout), '(\d+) resolvers,') |
                 ForEach-Object { $_.Groups[1].Value })
         if ($loggedResolvers.Count -gt 0) {
             break
@@ -1196,50 +1328,52 @@ try {
     if ($loggedResolvers.Count -eq 0) {
         Stop-Verify 'request timeline' (Join-Lines @(
             'The service never logged a request timeline.'
-            'RequestTimelineListener is what writes it. It is registered through'
-            'AddDiagnosticEventListener, and it needs AddApplicationService<ILoggerFactory>()'
-            'alongside it or the schema will not build at all.'
+            'RequestTimelineListener is what writes it. AddMosaicSubgraph registers it'
+            'through AddDiagnosticEventListener, alongside the'
+            'AddApplicationService<ILoggerFactory>() without which no schema builds.'
             ''
-            (Get-LogTail $apiStdout)))
+            (Get-LogTail $reviewsStdout)))
     }
 
-    if ($loggedResolvers -notcontains "$ExpectedResolverCount") {
+    if ($loggedResolvers -notcontains "$ExpectedReviewsResolverCount") {
         Stop-Verify 'request timeline' (Join-Lines @(
-            "Expected the timeline to report $ExpectedResolverCount resolvers for the query."
+            "Expected the timeline to report $ExpectedReviewsResolverCount resolvers for the query."
             "It reported: $($loggedResolvers -join ', ')."
             ''
-            'Chapter 3 makes a point of this matching the lookup count exactly:'
-            'every resolver the engine runs does one domain-service lookup, and'
-            'the plain record properties are not resolvers at all.'))
+            'One _entities field and 25 review connections. It was 146 until chapter'
+            '12, and the 120 that left are the authors: GetAuthor has no await in it'
+            'now, so it compiles to a pure resolver, runs inline, and never reaches'
+            'the diagnostic event this count comes from. If it is 146 again, somebody'
+            'made that field asynchronous.'))
     }
-    Write-Ok "request timeline reported $ExpectedResolverCount resolvers"
+    Write-Ok "request timeline reported $ExpectedReviewsResolverCount resolvers"
 
     # -- 6d. the database round trips --------------------------------------
 
     $loggedSql = @(
-        [regex]::Matches((Get-LogText $apiStdout), '(\d+) SQL\)') |
+        [regex]::Matches((Get-LogText $reviewsStdout), '(\d+) SQL\)') |
             ForEach-Object { $_.Groups[1].Value })
 
     if ($loggedSql.Count -eq 0) {
         Stop-Verify 'sql command count' (Join-Lines @(
             'The timeline never reported a SQL command count.'
-            'SqlCommandCounter is the EF Core interceptor that produces it, and it'
-            'is attached to the pooled context factory in AddMosaicDatabase.'
+            'SqlCommandCounter is the EF Core interceptor that produces it, and every'
+            'one of the six attaches it to its pooled context factory.'
             ''
-            (Get-LogTail $apiStdout)))
+            (Get-LogTail $reviewsStdout)))
     }
 
-    if ($loggedSql -notcontains "$ExpectedSqlCommandCount") {
+    if ($loggedSql -notcontains "$ExpectedReviewsSqlCount") {
         Stop-Verify 'sql command count' (Join-Lines @(
-            "Expected the timeline to report $ExpectedSqlCommandCount SQL commands for the query."
+            "Expected the timeline to report $ExpectedReviewsSqlCount SQL commands for the query."
             "It reported: $($loggedSql -join ', ')."
             ''
-            'This is the number chapter 4 is about and chapter 8 moved by one. If it'
-            'went up, something started querying per row. If it went down, something'
-            'started batching, and the chapter that claims otherwise needs rewriting.'))
+            'This is the number chapter 4 is about, chapter 8 moved by one, and'
+            'chapter 12 left alone: the author batch went to Accounts, and it was'
+            'never one of the two statements this service runs.'))
     }
 
-    $sqlCeiling = $ExpectedSqlCommandCount + $SplitBatchAllowance
+    $sqlCeiling = $ExpectedReviewsSqlCount + $SplitBatchAllowance
     $tooManyCommands = @($loggedSql | Where-Object { [int] $_ -gt $sqlCeiling })
     if ($tooManyCommands.Count -gt 0) {
         Stop-Verify 'sql command count' (Join-Lines @(
@@ -1248,7 +1382,7 @@ try {
             'A single split batch costs one extra statement and is expected now and'
             'again. More than that is an N+1 growing back.'))
     }
-    Write-Ok "request timeline reported $ExpectedSqlCommandCount SQL commands"
+    Write-Ok "request timeline reported $ExpectedReviewsSqlCount SQL commands"
 
     # -- 7. the postman collection -----------------------------------------
 
@@ -1272,13 +1406,17 @@ try {
     } elseif (-not $newmanCommand) {
         Write-Skipped 'postman' 'newman is not installed - run npm install first'
     } else {
-        # Both URLs are overridden rather than trusted: the environment file
-        # says 5100 and 5101, and this script can be pointed elsewhere.
+        # Every URL is overridden rather than trusted: the environment file
+        # names the default ports, and this script can be pointed elsewhere.
         $newmanArgs = $newmanPrefix + @(
             'run', $PostmanCollection,
             '--environment', $PostmanEnvironment,
-            '--env-var', "mosaicUrl=$BaseUrl",
-            '--env-var', "catalogUrl=$CatalogSubgraphUrl",
+            '--env-var', "catalogUrl=$MosaicCatalogUrl",
+            '--env-var', "pricingUrl=$MosaicPricingUrl",
+            '--env-var', "inventoryUrl=$($Subgraphs['inventory'].Url)",
+            '--env-var', "accountsUrl=$MosaicAccountsUrl",
+            '--env-var', "reviewsUrl=$MosaicReviewsUrl",
+            '--env-var', "orderingUrl=$MosaicOrderingUrl",
             '--bail')
         & $newmanCommand @newmanArgs
         if ($LASTEXITCODE -ne 0) {
@@ -1287,7 +1425,7 @@ try {
         Write-Ok 'postman collection'
     }
 
-    # -- 8. the two subgraphs still compose ---------------------------------
+    # -- 8. the six subgraphs still compose ---------------------------------
 
     # wgc is a local dev dependency, pinned in package.json beside newman. It
     # composes from committed schema files and talks to nothing.
@@ -1307,16 +1445,20 @@ try {
     # Chapter 8 shows no composition at all: everything it does is done against
     # one subgraph at a time, by hand, and chapter 9 is where composition
     # becomes the subject. The check was here from chapter 8 anyway, because
-    # three separate things about these two schemas would break the graph only
+    # three separate things about those two schemas would break the graph only
     # when it is assembled - two subgraphs both declaring Query.node, the cost
     # directives HotChocolate stamps by default, and PageCursor being the one
     # paging type nothing marks shareable - and none of them is visible from
     # either service on its own.
     #
-    # Chapter 9 adds two things to it. The composed config is compared against
-    # the committed one, because the chapter prints what is inside it. And the
-    # composition cases run, because the chapter prints the composer's errors
-    # too, and an error message is as easy to go stale as a schema.
+    # Chapter 12 made that argument five times larger. Six services get those
+    # three settings right or the graph does not assemble, which is why they
+    # live in Mosaic.ServiceDefaults now rather than in six comments.
+    #
+    # Chapter 9 adds two things to this step. The composed config is compared
+    # against the committed one, because the chapter prints what is inside it.
+    # And the composition cases run, because the chapter prints the composer's
+    # errors too, and an error message is as easy to go stale as a schema.
     if (-not (Test-Path -LiteralPath $FederationGraph)) {
         Write-Skipped 'composition' 'federation/mosaic.yaml does not exist yet'
     } elseif (-not $wgcCommand) {
@@ -1328,14 +1470,14 @@ try {
         if ($LASTEXITCODE -ne 0) {
             Stop-Verify 'composition' (Join-Lines @(
                 "wgc router compose exited with $LASTEXITCODE."
-                'The two subgraph schemas under schema/ no longer compose into one'
+                'The six subgraph schemas under schema/ no longer compose into one'
                 'graph. That is a real finding rather than a tooling problem, and the'
                 'table above says which coordinate the composer objected to.'))
         }
         if (-not (Test-Path -LiteralPath $supergraph)) {
             Stop-Verify 'composition' "wgc reported success but wrote nothing to $supergraph."
         }
-        Write-Ok 'catalog and mosaic compose into one supergraph'
+        Write-Ok "all $($Subgraphs.Count) subgraphs compose into one supergraph"
 
         # -- 8a. the composed config is the one chapter 9 takes apart --------
 
@@ -1379,6 +1521,28 @@ try {
                     'differs. Fix the chapter, not the assertion.'))
             }
             Write-Ok 'the composition errors chapter 9 prints are the ones wgc produces'
+        }
+
+        # -- 8b2. what @override does, which is chapter 12's subject ---------
+
+        # Nine cases, and none of them needs a service running: every one is a
+        # composition, because everything @override does happens at composition
+        # time. That is itself the finding the chapter leads with.
+        if (-not (Test-Path -LiteralPath $OverrideCases)) {
+            Write-Skipped 'override cases' 'scripts/override-cases.mjs does not exist yet'
+        } elseif (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+            Stop-Verify 'override cases' 'node is not on PATH; it is needed to run scripts/override-cases.mjs.'
+        } else {
+            & node $OverrideCases
+            if ($LASTEXITCODE -ne 0) {
+                Stop-Verify 'override cases' (Join-Lines @(
+                    "scripts/override-cases.mjs exited with $LASTEXITCODE."
+                    'One of the @override behaviours chapter 12 describes has changed. The'
+                    'output above says which case and how. If it is the progressive one,'
+                    'wgc may have implemented the federation 2.7 label argument, and that'
+                    'is a rewrite of a section rather than a loosened assertion.'))
+            }
+            Write-Ok 'the nine @override behaviours chapter 12 prints are the ones wgc produces'
         }
 
         # -- 8c. chapter 10: a router in front of the two ---------------------
@@ -1489,8 +1653,8 @@ try {
                     'run', $EntitiesPostman,
                     '--environment', $EntitiesPostmanEnv,
                     '--env-var', "routerUrl=$MosaicRouterUrl",
-                    '--env-var', "mosaicUrl=$BaseUrl",
-                    '--env-var', "catalogUrl=$CatalogSubgraphUrl",
+                    '--env-var', "pricingUrl=$MosaicPricingUrl",
+                    '--env-var', "catalogUrl=$MosaicCatalogUrl",
                     '--bail'))
                 if ($LASTEXITCODE -ne 0) {
                     Stop-Verify 'entities postman' (Join-Lines @(
@@ -1523,63 +1687,93 @@ try {
                 Write-Ok 'entities resolve the eleven ways chapter 11 says they do'
             }
 
-            # What the computed field costs, off Mosaic's own timeline. Both
-            # documents are warmed first, because a cold request measures the
-            # runtime warming up rather than the query, and both are measured in
-            # the same run so the two numbers can be compared at all.
+            # What the storefront query costs and where, off all six timelines.
+            # Both documents are warmed first, because a cold request measures
+            # the runtime warming up rather than the query, and both are
+            # measured in the same run so the two sets can be compared at all.
+            #
+            # Chapter 11 read one service's timeline. Chapter 12 reads six, and
+            # the reason is the whole chapter: the same query costs the same
+            # database work spread across four processes, and the two that do
+            # nothing have to be checked for doing nothing.
             foreach ($warm in 1..3) {
                 Invoke-Gql -Url $MosaicRouterUrl -Query $PlainStorefrontQuery -Step 'storefront warm-up' | Out-Null
                 Invoke-Gql -Url $MosaicRouterUrl -Query $ShippingStorefrontQuery -Step 'storefront warm-up' | Out-Null
             }
 
             $timelinePattern = '(\d+) resolvers, (\d+) SQL\)'
-            $shippingCases = @(
-                @{ Name = 'without shippingCost'; Query = $PlainStorefrontQuery; Resolvers = $ExpectedResolversWithoutShipping }
-                @{ Name = 'with shippingCost';    Query = $ShippingStorefrontQuery; Resolvers = $ExpectedResolversWithShipping }
+            $storefrontCases = @(
+                @{ Name = 'without shippingCost'; Query = $PlainStorefrontQuery;    Expected = $ExpectedStorefrontWithout }
+                @{ Name = 'with shippingCost';    Query = $ShippingStorefrontQuery; Expected = $ExpectedStorefrontWith }
             )
 
-            foreach ($shippingCase in $shippingCases) {
-                $before = ([regex]::Matches((Get-LogText $apiStdout), $timelinePattern)).Count
-                Invoke-Gql -Url $MosaicRouterUrl -Query $shippingCase.Query -Step "storefront $($shippingCase.Name)" | Out-Null
+            foreach ($storefrontCase in $storefrontCases) {
+                # Where every subgraph's log stood before the query, so that the
+                # lines this query produces can be told from the ones the
+                # warm-up did.
+                $before = @{}
+                foreach ($name in $Subgraphs.Keys) {
+                    $before[$name] = ([regex]::Matches((Get-LogText $Subgraphs[$name].Stdout), $timelinePattern)).Count
+                }
 
-                $deadline = (Get-Date).AddSeconds(15)
-                $match = $null
-                while ((Get-Date) -lt $deadline) {
-                    $all = [regex]::Matches((Get-LogText $apiStdout), $timelinePattern)
-                    if ($all.Count -gt $before) {
-                        $match = $all[$all.Count - 1]
-                        break
+                Invoke-Gql -Url $MosaicRouterUrl -Query $storefrontCase.Query -Step "storefront $($storefrontCase.Name)" | Out-Null
+
+                foreach ($name in $storefrontCase.Expected.Keys) {
+                    $want = $storefrontCase.Expected[$name]
+                    $stdout = $Subgraphs[$name].Stdout
+
+                    $deadline = (Get-Date).AddSeconds(15)
+                    $match = $null
+                    while ((Get-Date) -lt $deadline) {
+                        $all = [regex]::Matches((Get-LogText $stdout), $timelinePattern)
+                        if ($all.Count -gt $before[$name]) {
+                            $match = $all[$all.Count - 1]
+                            break
+                        }
+                        Start-Sleep -Milliseconds 200
                     }
-                    Start-Sleep -Milliseconds 200
+
+                    if ($null -eq $match) {
+                        Stop-Verify 'storefront cost' (Join-Lines @(
+                            "$name logged no timeline for the storefront query $($storefrontCase.Name),"
+                            'so either the router did not call it or it is not reporting.'
+                            ''
+                            (Get-LogTail $stdout)))
+                    }
+
+                    $resolvers = [int] $match.Groups[1].Value
+                    $sql = [int] $match.Groups[2].Value
+
+                    if ($resolvers -ne $want.Resolvers) {
+                        Stop-Verify 'storefront cost' (Join-Lines @(
+                            "$name reported $resolvers resolvers for the storefront query $($storefrontCase.Name),"
+                            "and chapter 12 prints $($want.Resolvers)."))
+                    }
+                    if ($sql -ne $want.Sql) {
+                        Stop-Verify 'storefront cost' (Join-Lines @(
+                            "$name reported $sql SQL commands for the storefront query $($storefrontCase.Name),"
+                            "and chapter 12 prints $($want.Sql)."
+                            'A resolver that reached for its own DataLoader instead of the one'
+                            'its neighbour already uses would show up here and nowhere else.'))
+                    }
                 }
 
-                if ($null -eq $match) {
-                    Stop-Verify 'shipping cost' (Join-Lines @(
-                        "Mosaic logged no timeline for the storefront query $($shippingCase.Name)."
-                        ''
-                        (Get-LogTail $apiStdout)))
-                }
-
-                $resolvers = [int] $match.Groups[1].Value
-                $sql = [int] $match.Groups[2].Value
-
-                if ($resolvers -ne $shippingCase.Resolvers) {
-                    Stop-Verify 'shipping cost' (Join-Lines @(
-                        "The storefront query $($shippingCase.Name) reported $resolvers resolvers,"
-                        "and chapter 11 prints $($shippingCase.Resolvers)."
-                        'The difference between the two rows is the chapter''s claim: one'
-                        'resolver per product and nothing else.'))
-                }
-                if ($sql -ne $ExpectedStorefrontSql) {
-                    Stop-Verify 'shipping cost' (Join-Lines @(
-                        "The storefront query $($shippingCase.Name) reported $sql SQL commands,"
-                        "and chapter 11 prints $ExpectedStorefrontSql for both rows."
-                        'A computed field that reaches for its own DataLoader instead of the'
-                        'one price already uses would show up here and nowhere else.'))
+                # And the two that should have been left alone. This is the
+                # assertion that would catch the router fetching from a service
+                # the query never mentions.
+                foreach ($name in $SilentForStorefront) {
+                    $after = ([regex]::Matches((Get-LogText $Subgraphs[$name].Stdout), $timelinePattern)).Count
+                    if ($after -ne $before[$name]) {
+                        Stop-Verify 'storefront cost' (Join-Lines @(
+                            "$name answered a request for the storefront query $($storefrontCase.Name),"
+                            'and nothing in that query is its to answer.'))
+                    }
                 }
             }
-            Write-Ok ("a computed field costs $($ExpectedResolversWithShipping - $ExpectedResolversWithoutShipping) " +
-                "more resolvers and no more SQL")
+
+            $shippingDelta = $ExpectedStorefrontWith['pricing'].Resolvers - $ExpectedStorefrontWithout['pricing'].Resolvers
+            Write-Ok ("the storefront costs $shippingDelta more resolvers in pricing with shippingCost, " +
+                "no more SQL anywhere, and nothing at all in accounts or ordering")
 
             # Down rather than stop, and now rather than in the finally block,
             # because the federated-wire section below wants this port.
@@ -1821,37 +2015,32 @@ try {
 } finally {
     # -- 8. give the machine back the way we found it ----------------------
 
-    if ($apiProcess -and -not $apiProcess.HasExited) {
-        try {
-            # dotnet run launches the application as a child process, so the whole
-            # tree has to go. Killing only the process we started leaves the app
-            # holding the port.
-            $apiProcess.Kill($true)
-            [void] $apiProcess.WaitForExit(15000)
-        } catch {
-            Write-Host "Could not stop the service (pid $($apiProcess.Id)): $($_.Exception.Message)" -ForegroundColor Yellow
+    foreach ($name in $Subgraphs.Keys) {
+        $process = $Subgraphs[$name].Process
+        if ($process -and -not $process.HasExited) {
+            try {
+                # dotnet run launches the application as a child process, so the
+                # whole tree has to go. Killing only the process we started
+                # leaves the app holding the port.
+                $process.Kill($true)
+                [void] $process.WaitForExit(15000)
+            } catch {
+                Write-Host "Could not stop the $name subgraph (pid $($process.Id)): $($_.Exception.Message)" -ForegroundColor Yellow
+            }
         }
     }
 
-    if ($catalogProcess -and -not $catalogProcess.HasExited) {
-        try {
-            $catalogProcess.Kill($true)
-            [void] $catalogProcess.WaitForExit(15000)
-        } catch {
-            Write-Host "Could not stop the Catalog subgraph (pid $($catalogProcess.Id)): $($_.Exception.Message)" -ForegroundColor Yellow
-        }
-    }
-
-    foreach ($pair in @(@{ Process = $apiProcess; Port = $Port }, @{ Process = $catalogProcess; Port = $CatalogSubgraphPort })) {
-        if (-not $pair.Process) {
+    foreach ($name in $Subgraphs.Keys) {
+        if (-not $Subgraphs[$name].Process) {
             continue
         }
+        $port = $Subgraphs[$name].Port
         $portDeadline = (Get-Date).AddSeconds(10)
-        while ((Get-Date) -lt $portDeadline -and (Test-PortInUse $pair.Port)) {
+        while ((Get-Date) -lt $portDeadline -and (Test-PortInUse $port)) {
             Start-Sleep -Milliseconds 250
         }
-        if (Test-PortInUse $pair.Port) {
-            Write-Host "Warning: something is still listening on port $($pair.Port) after the service was stopped." -ForegroundColor Yellow
+        if (Test-PortInUse $port) {
+            Write-Host "Warning: something is still listening on port $port after the $name subgraph was stopped." -ForegroundColor Yellow
         }
     }
 

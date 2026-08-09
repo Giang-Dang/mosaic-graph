@@ -4,10 +4,9 @@
        from Directory.Build.props. Package versions come from
        Directory.Packages.props. -->
 
-  <!-- The same list Mosaic.Api carries, minus the two things Catalog has no
-       use for - subscriptions, which belong to Reviews - and plus the one it
-       does: HotChocolate.ApolloFederation. That package is what turns an
-       ordinary GraphQL service into a subgraph. -->
+  <!-- The list every Mosaic subgraph carries. It was "the same list Mosaic.Api
+       carries, minus subscriptions" until chapter 12; there are six of these
+       files now and this one is no longer the exception. -->
 
   <ItemGroup>
     <PackageReference Include="HotChocolate.AspNetCore" />
@@ -20,6 +19,16 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Chapter 12. Catalog was the service with no instrumentation, which
+         chapter 10 recorded as "half of every federated query is unobserved".
+         It is now the service with the same instrumentation as the other five,
+         which is not the same thing as observability - six unrelated timelines
+         are still six unrelated timelines, and chapter 23 owns the trace that
+         joins them. -->
+    <ProjectReference Include="..\Mosaic.ServiceDefaults\Mosaic.ServiceDefaults.csproj" />
   </ItemGroup>
 
 </Project>
