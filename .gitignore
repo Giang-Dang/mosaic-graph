@@ -16,4 +16,9 @@ TestResults/
 
 # Chapter 7 composes this from samples/federated-wire/graph.yaml. It is a
 # build artifact of two committed schemas, not a source file.
+#
+# federation/supergraph.json is the same kind of artifact and is committed
+# anyway, which is a deliberate difference rather than an oversight: chapter 9
+# prints what is inside it, so it has to be a file a reader can open, and
+# verify.ps1 recomposes and compares. Chapter 7 prints nothing out of its one.
 samples/federated-wire/supergraph.json

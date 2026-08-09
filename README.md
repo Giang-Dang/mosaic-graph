@@ -24,6 +24,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | `ch05` | 5. Schema Design That Survives Change | The `Node` interface and real global identifiers, `Product.reviews` as a connection, Mosaic's first mutation with typed errors, a subscription, and `products` deprecated |
 | `ch07` | 7. How a Federated Query Actually Runs | Mosaic unchanged. A new sample: two tiny subgraphs and the Cosmo Router, with every request between them logged |
 | `ch08` | 8. The First Cut: Extracting Catalog | Two services. `Mosaic.Catalog` on 5101 owns `Product`; Mosaic on 5100 keeps the other five domains and contributes `price`, `availableQuantity`, `reviews` and `averageRating` to the same type. Both are federation subgraphs |
+| `ch09` | 9. Composition | Neither service changes by a line. The composed router execution config is committed at `federation/supergraph.json`, and `scripts/composition-cases.mjs` produces five composition errors on purpose, each one the real pair of schemas with a single edit applied |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -144,6 +145,38 @@ schemas are committed, one file each: `schema/catalog.graphql` and
 `schema/mosaic.graphql`. `federation/mosaic.yaml` names the pair and says where
 each answers. Chapter 8 creates that file and composes nothing with it; chapter
 9 is where composition is the subject.
+
+### Composition (chapter 9)
+
+One command turns the two schemas into one file, with no account and no network:
+
+```
+npx wgc router compose -i federation/mosaic.yaml -o federation/supergraph.json
+```
+
+That output is a *router execution config*, not a supergraph schema. It carries
+the client-facing schema as one string with no federation directives in it, a
+routing table under `engineConfig.datasourceConfigurations` saying which
+subgraph can answer which fields, and each subgraph's own SDL twice: verbatim
+under `federation.serviceSdl`, and normalised in `engineConfig.stringStorage`
+under a key that is the SHA-1 of its contents. `compatibilityVersion` is the
+router contract version and the composition library version joined by a colon.
+
+Chapter 9 prints pieces of that file, so unlike chapter 7's sample supergraph it
+is committed rather than gitignored, and `verify.ps1` recomposes and compares.
+
+The chapter also prints five composition errors, each produced by taking the
+committed pair and applying exactly one edit:
+
+```
+node scripts/composition-cases.mjs --list
+node scripts/composition-cases.mjs                  # assert every message
+node scripts/composition-cases.mjs --print missing-key
+```
+
+The edits are literal string replacements that must match exactly once, so a
+change to a committed schema that removes the text a case edits fails loudly
+instead of quietly composing something nobody meant.
 
 `Product.id` is the field chapter 5 designed, unchanged: a Relay global
 identifier, base64, carrying the type name beside the key. Since chapter 8 it is

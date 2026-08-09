@@ -82,6 +82,15 @@ CATALOG_SCHEMA="$REPO_ROOT/schema/catalog.graphql"
 CATALOG_SUBGRAPH_URL="http://localhost:$CATALOG_SUBGRAPH_PORT"
 FEDERATION_GRAPH="$REPO_ROOT/federation/mosaic.yaml"
 
+# -- chapter 9's composition ------------------------------------------------
+
+# The composed router execution config is committed, unlike chapter 7's, which
+# is a build artifact and gitignored. The difference is that chapter 9 prints
+# what is inside this one, so it has to be a file a reader can open and the gate
+# has to notice when a fresh compose stops matching it.
+FEDERATION_SUPERGRAPH="$REPO_ROOT/federation/supergraph.json"
+COMPOSITION_CASES="$REPO_ROOT/scripts/composition-cases.mjs"
+
 # The two subgraphs since chapter 8, written as <name>:<port>. Both files under
 # schema/ are what `_service { sdl }` returns, which is what a composer reads,
 # so checking them is a check on the federated contract and not only on the SDL.
@@ -1424,11 +1433,16 @@ fi
 
 # Chapter 8 shows no composition at all: everything it does is done against one
 # subgraph at a time, by hand, and chapter 9 is where composition becomes the
-# subject. The check is here anyway, because three separate things about these
-# two schemas would break the graph only when it is assembled - two subgraphs
-# both declaring Query.node, the cost directives HotChocolate stamps by default,
-# and PageCursor being the one paging type nothing marks shareable - and none of
-# them is visible from either service on its own.
+# subject. The check was here from chapter 8 anyway, because three separate
+# things about these two schemas would break the graph only when it is assembled
+# - two subgraphs both declaring Query.node, the cost directives HotChocolate
+# stamps by default, and PageCursor being the one paging type nothing marks
+# shareable - and none of them is visible from either service on its own.
+#
+# Chapter 9 adds two things to it. The composed config is compared against the
+# committed one, because the chapter prints what is inside it. And the
+# composition cases run, because the chapter prints the composer's errors too,
+# and an error message is as easy to go stale as a schema.
 if [ ! -f "$FEDERATION_GRAPH" ]; then
     step_skip 'composition' 'federation/mosaic.yaml does not exist yet'
 elif [ -z "$WGC_BIN" ]; then
@@ -1450,6 +1464,47 @@ coordinate the composer objected to.'
         step_fail 'composition' "wgc reported success but wrote nothing to $SUPERGRAPH."
     fi
     step_ok 'catalog and mosaic compose into one supergraph'
+
+    # -- 8a. the composed config is the one chapter 9 takes apart -----------
+
+    if [ ! -f "$FEDERATION_SUPERGRAPH" ]; then
+        step_skip 'supergraph drift' 'federation/supergraph.json does not exist yet'
+    elif ! same_text "$FEDERATION_SUPERGRAPH" "$SUPERGRAPH"; then
+        step_fail 'supergraph drift' 'A fresh compose does not match federation/supergraph.json.
+
+Chapter 9 prints the contents of that file: the datasource configurations, the
+string storage, the compatibility version and the client schema with no join
+directives in it. A change here is a change to the chapter.
+
+If it is deliberate, recompose and commit the result:
+
+    npx wgc router compose -i federation/mosaic.yaml -o federation/supergraph.json
+
+If it is not, wgc changed the config format. That is a finding, and the version
+is pinned in package.json precisely so it cannot happen quietly.'
+    else
+        step_ok 'the composed config matches federation/supergraph.json'
+    fi
+
+    # -- 8b. the errors chapter 9 prints ------------------------------------
+
+    # Every case is Mosaic's own pair with one edit applied, so these assert the
+    # messages the chapter quotes rather than messages from a fixture invented
+    # to produce them.
+    if [ ! -f "$COMPOSITION_CASES" ]; then
+        step_skip 'composition cases' 'scripts/composition-cases.mjs does not exist yet'
+    elif ! command -v node >/dev/null 2>&1; then
+        step_fail 'composition cases' 'node is not on PATH; it is needed to run scripts/composition-cases.mjs.'
+    else
+        node "$COMPOSITION_CASES"
+        if [ $? -ne 0 ]; then
+            step_fail 'composition cases' 'scripts/composition-cases.mjs failed.
+One of the composition errors chapter 9 prints is no longer the error the
+composer produces. The output above says which case and how it differs. Fix the
+chapter, not the assertion.'
+        fi
+        step_ok 'the composition errors chapter 9 prints are the ones wgc produces'
+    fi
 fi
 
 # -- 9. chapter 7's federated wire ------------------------------------------

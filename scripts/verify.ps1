@@ -108,6 +108,15 @@ $CatalogSchema      = Join-Path $RepoRoot 'schema' 'catalog.graphql'
 $CatalogSubgraphUrl = "http://localhost:$CatalogSubgraphPort"
 $FederationGraph    = Join-Path $RepoRoot 'federation' 'mosaic.yaml'
 
+# -- chapter 9's composition -------------------------------------------------
+
+# The composed router execution config is committed, unlike chapter 7's, which
+# is a build artifact and gitignored. The difference is that chapter 9 prints
+# what is inside this one, so it has to be a file a reader can open and the
+# gate has to notice when a fresh compose stops matching it.
+$FederationSupergraph = Join-Path $RepoRoot 'federation' 'supergraph.json'
+$CompositionCases     = Join-Path $RepoRoot 'scripts' 'composition-cases.mjs'
+
 # -- chapter 7's federated-wire sample ---------------------------------------
 
 $WireDir            = Join-Path $RepoRoot 'samples' 'federated-wire'
@@ -1234,12 +1243,17 @@ try {
 
     # Chapter 8 shows no composition at all: everything it does is done against
     # one subgraph at a time, by hand, and chapter 9 is where composition
-    # becomes the subject. The check is here anyway, because three separate
-    # things about these two schemas would break the graph only when it is
-    # assembled - two subgraphs both declaring Query.node, the cost directives
-    # HotChocolate stamps by default, and PageCursor being the one paging type
-    # nothing marks shareable - and none of them is visible from either service
-    # on its own.
+    # becomes the subject. The check was here from chapter 8 anyway, because
+    # three separate things about these two schemas would break the graph only
+    # when it is assembled - two subgraphs both declaring Query.node, the cost
+    # directives HotChocolate stamps by default, and PageCursor being the one
+    # paging type nothing marks shareable - and none of them is visible from
+    # either service on its own.
+    #
+    # Chapter 9 adds two things to it. The composed config is compared against
+    # the committed one, because the chapter prints what is inside it. And the
+    # composition cases run, because the chapter prints the composer's errors
+    # too, and an error message is as easy to go stale as a schema.
     if (-not (Test-Path -LiteralPath $FederationGraph)) {
         Write-Skipped 'composition' 'federation/mosaic.yaml does not exist yet'
     } elseif (-not $wgcCommand) {
@@ -1259,6 +1273,50 @@ try {
             Stop-Verify 'composition' "wgc reported success but wrote nothing to $supergraph."
         }
         Write-Ok 'catalog and mosaic compose into one supergraph'
+
+        # -- 8a. the composed config is the one chapter 9 takes apart --------
+
+        if (-not (Test-Path -LiteralPath $FederationSupergraph)) {
+            Write-Skipped 'supergraph drift' 'federation/supergraph.json does not exist yet'
+        } elseif (-not (Test-SameText $FederationSupergraph $supergraph)) {
+            Stop-Verify 'supergraph drift' (Join-Lines @(
+                'A fresh compose does not match federation/supergraph.json.'
+                ''
+                'Chapter 9 prints the contents of that file: the datasource'
+                'configurations, the string storage, the compatibility version and the'
+                'client schema with no join directives in it. A change here is a change'
+                'to the chapter.'
+                ''
+                'If it is deliberate, recompose and commit the result:'
+                ''
+                '    npx wgc router compose -i federation/mosaic.yaml -o federation/supergraph.json'
+                ''
+                'If it is not, wgc changed the config format. That is a finding, and the'
+                'version is pinned in package.json precisely so it cannot happen quietly.'))
+        } else {
+            Write-Ok 'the composed config matches federation/supergraph.json'
+        }
+
+        # -- 8b. the errors chapter 9 prints ---------------------------------
+
+        # Every case is Mosaic's own pair with one edit applied, so these assert
+        # the messages the chapter quotes rather than messages from a fixture
+        # invented to produce them.
+        if (-not (Test-Path -LiteralPath $CompositionCases)) {
+            Write-Skipped 'composition cases' 'scripts/composition-cases.mjs does not exist yet'
+        } elseif (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+            Stop-Verify 'composition cases' 'node is not on PATH; it is needed to run scripts/composition-cases.mjs.'
+        } else {
+            & node $CompositionCases
+            if ($LASTEXITCODE -ne 0) {
+                Stop-Verify 'composition cases' (Join-Lines @(
+                    "scripts/composition-cases.mjs exited with $LASTEXITCODE."
+                    'One of the composition errors chapter 9 prints is no longer the error'
+                    'the composer produces. The output above says which case and how it'
+                    'differs. Fix the chapter, not the assertion.'))
+            }
+            Write-Ok 'the composition errors chapter 9 prints are the ones wgc produces'
+        }
     }
 
     # -- 9. chapter 7's federated wire --------------------------------------
