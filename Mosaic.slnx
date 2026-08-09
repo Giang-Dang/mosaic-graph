@@ -10,5 +10,6 @@
     <Project Path="samples/resolver-scopes/Mosaic.Sample.ResolverScopes.csproj" />
     <Project Path="samples/federated-wire/Mosaic.Sample.Wire.Catalog/Mosaic.Sample.Wire.Catalog.csproj" />
     <Project Path="samples/federated-wire/Mosaic.Sample.Wire.Reviews/Mosaic.Sample.Wire.Reviews.csproj" />
+    <Project Path="samples/entity-attribute-placement/Mosaic.Sample.EntityAttributePlacement.csproj" />
   </Folder>
 </Solution>

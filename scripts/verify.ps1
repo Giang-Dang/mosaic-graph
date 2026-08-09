@@ -611,6 +611,50 @@ try {
         Write-Ok 'sample schemas match schema/samples'
     }
 
+    # -- 4b. the entity-attribute-placement sample -------------------------
+
+    # Chapter 8 prints this sample's SDL as the evidence that
+    # [ReferenceResolver] inside an [ObjectType<T>] class becomes an ordinary
+    # field. The leaked field is the whole finding, so a HotChocolate release
+    # that stopped leaking it would make the chapter wrong, and this is where
+    # that would show up.
+    $PlacementProject = Join-Path $RepoRoot 'samples' 'entity-attribute-placement'
+    $PlacementSchema = Join-Path $SampleSchemaDir 'entity-attribute-placement.graphql'
+
+    if (-not (Test-Path -LiteralPath $PlacementProject)) {
+        Write-Skipped 'placement sample' 'samples/entity-attribute-placement does not exist yet'
+    } else {
+        $placementExport = Join-Path $tempDir 'entity-attribute-placement.graphql'
+        & dotnet run --project $PlacementProject -c Release --no-build --no-launch-profile -- schema export --output $placementExport
+        if ($LASTEXITCODE -ne 0) {
+            Stop-Verify 'placement sample' 'Exporting the entity-attribute-placement schema failed.'
+        }
+        if (-not (Test-SameText $PlacementSchema $placementExport)) {
+            Stop-Verify 'placement sample' (Join-Lines @(
+                'schema/samples/entity-attribute-placement.graphql is not what the project exports.'
+                ''
+                (Get-SchemaDiff -ExpectedPath $PlacementSchema -ActualPath $placementExport `
+                    -WorkDir $tempDir -Label 'placement')))
+        }
+
+        # The leak by name, because that is the claim rather than the file
+        # being unchanged. Alpha puts [ReferenceResolver] on the type extension
+        # class and Bravo puts it on the record.
+        $placementSdl = Get-NormalisedText $PlacementSchema
+        if ($placementSdl -notmatch '(?s)type Alpha @key\(fields: "id"\) \{\s*resolveByKey') {
+            Stop-Verify 'placement sample' (Join-Lines @(
+                'Alpha no longer publishes resolveByKey as a field.'
+                'Chapter 8 is built on that leak. If HotChocolate stopped turning a'
+                '[ReferenceResolver] method in an [ObjectType<T>] class into an ordinary'
+                'field, the chapter needs rewriting rather than this check needing'
+                'loosening.'))
+        }
+        if ($placementSdl -match '(?s)type Bravo @key\(fields: "id"\) \{\s*resolveByKey') {
+            Stop-Verify 'placement sample' 'Bravo leaked resolveByKey, which is the placement chapter 8 calls safe.'
+        }
+        Write-Ok 'the placement sample still leaks exactly the field chapter 8 prints'
+    }
+
     # -- 5. start both subgraphs and ask the chapter's question in halves ---
 
     foreach ($name in $Subgraphs.Keys) {

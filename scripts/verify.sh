@@ -839,6 +839,55 @@ $(schema_diff "$committed_sample" "$TEMP_DIR/$approach.graphql" "committed-$appr
     step_ok 'sample schemas match schema/samples'
 fi
 
+# -- 4b. the entity-attribute-placement sample ------------------------------
+
+# Chapter 8 prints this sample's SDL as the evidence that [ReferenceResolver]
+# inside an [ObjectType<T>] class becomes an ordinary field. The leaked field
+# is the whole finding, so a HotChocolate release that stopped leaking it would
+# make the chapter wrong, and this is where that would show up.
+PLACEMENT_PROJECT="$REPO_ROOT/samples/entity-attribute-placement"
+PLACEMENT_SCHEMA="$SAMPLE_SCHEMA_DIR/entity-attribute-placement.graphql"
+
+if [ ! -d "$PLACEMENT_PROJECT" ]; then
+    step_skip 'placement sample' 'samples/entity-attribute-placement does not exist yet'
+else
+    if ! dotnet run --project "$PLACEMENT_PROJECT" -c Release --no-build --no-launch-profile \
+            -- schema export --output "$TEMP_DIR/entity-attribute-placement.graphql"; then
+        step_fail 'placement sample' 'Exporting the entity-attribute-placement schema failed.'
+    fi
+
+    if ! same_text "$PLACEMENT_SCHEMA" "$TEMP_DIR/entity-attribute-placement.graphql"; then
+        step_fail 'placement sample' "schema/samples/entity-attribute-placement.graphql is not what the project exports.
+
+$(schema_diff "$PLACEMENT_SCHEMA" "$TEMP_DIR/entity-attribute-placement.graphql" 'placement')"
+    fi
+
+    # The leak by name, because that is the claim rather than the file being
+    # unchanged. Alpha puts [ReferenceResolver] on the type extension class and
+    # Bravo puts it on the record. The newlines are squeezed out so one pattern
+    # can span two lines, and the carriage returns go first: the working tree
+    # is CRLF on Windows, and a stray \r lands in the middle of the pattern.
+    placement_flat="$(tr -d '\r' < "$PLACEMENT_SCHEMA" | tr '\n' ' ' | tr -s ' ')"
+
+    case "$placement_flat" in
+        *'type Alpha @key(fields: "id") { resolveByKey'*) ;;
+        *)
+            step_fail 'placement sample' 'Alpha no longer publishes resolveByKey as a field.
+Chapter 8 is built on that leak. If HotChocolate stopped turning a
+[ReferenceResolver] method in an [ObjectType<T>] class into an ordinary field,
+the chapter needs rewriting rather than this check needing loosening.'
+            ;;
+    esac
+
+    case "$placement_flat" in
+        *'type Bravo @key(fields: "id") { resolveByKey'*)
+            step_fail 'placement sample' 'Bravo leaked resolveByKey, which is the placement chapter 8 calls safe.'
+            ;;
+    esac
+
+    step_ok 'the placement sample still leaks exactly the field chapter 8 prints'
+fi
+
 # -- 5. start both subgraphs and ask the chapter's question in halves --------
 
 for entry in $SUBGRAPHS; do

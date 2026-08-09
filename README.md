@@ -254,6 +254,9 @@ samples/three-approaches/  the same tiny schema, three authoring styles
 samples/resolver-scopes/   what [UseRequestScope] changes, in two fields
 samples/federated-wire/    two subgraphs and a router, so the traffic between
                            them can be read; chapter 7
+samples/entity-attribute-placement/
+                           the same entity written four ways, to show where
+                           [Key] and [ReferenceResolver] may go; chapter 8
 schema/                  committed SDL snapshots, one per service
 postman/                 collections and environments
 scripts/                 verify.ps1 and verify.sh
