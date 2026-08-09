@@ -120,6 +120,25 @@ const CASES = [
     ],
   },
   {
+    name: 'enum-drift',
+    summary: 'both subgraphs declare ProductCategory with different members',
+    // Catalog uses the enum as an output (Product.category) and as an input
+    // (ProductFilterInput), which is the condition the composer's advice is
+    // about. Mosaic declaring a shorter copy is how an enum drifts in practice:
+    // somebody adds a member on one side of a cut.
+    edits: [
+      {
+        file: 'mosaic',
+        from: 'type Product @key(fields: "id") {',
+        to: 'enum ProductCategory {\n  FURNITURE\n  LIGHTING\n  KITCHEN\n}\n\ntype Product @key(fields: "id") {',
+      },
+    ],
+    expect: [
+      'Enum "ProductCategory" was used as both an input and output but was inconsistently defined across inclusive subgraphs.',
+      'add any new Enum values with the @inaccessible directive in the origin subgraph',
+    ],
+  },
+  {
     name: 'key-mismatch',
     summary: 'the two subgraphs key the same entity on different fields',
     edits: [
