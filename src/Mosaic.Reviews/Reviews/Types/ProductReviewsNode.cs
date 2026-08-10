@@ -37,8 +37,18 @@ namespace Mosaic.Reviews.Types;
 [ObjectType<Product>]
 public static partial class ProductReviewsNode
 {
-    /// <summary>What customers have said about this product, newest page first.</summary>
+    /// <summary>
+    /// What customers have said about this product, oldest first.
+    /// </summary>
     /// <remarks>
+    /// <para>
+    /// This said "newest page first" from chapter 5 to chapter 12 and was
+    /// wrong the whole time: <c>ReviewsService</c> orders by
+    /// <c>CreatedAt</c> ascending, so page one is the oldest reviews. Nothing
+    /// depended on the comment, which is why it survived five chapters, and
+    /// chapter 13 found it by decoding a cursor and reading the timestamps
+    /// inside it.
+    /// </para>
     /// <para>
     /// Three moving parts, and only one of them is the DataLoader.
     /// <c>[UseConnection]</c> puts <c>first</c>, <c>after</c>, <c>last</c> and
