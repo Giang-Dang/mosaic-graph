@@ -285,16 +285,31 @@ function compose(testCase, outPath) {
     const argv = [wgc, 'router', 'compose', '-i', join(dir, 'graph.yaml'), '-o', out];
     if (testCase.suppressWarnings) argv.push('--suppress-warnings');
 
+    // Run it, and be willing to run it twice. A composer that exits non-zero
+    // having printed nothing at all has not told us anything about these
+    // schemas, and reporting that as a changed behaviour sends somebody to look
+    // at the wrong thing. Seen during a full verify.ps1 run with seven .NET
+    // services up. Added in chapter 13; the same guard is in the other two case
+    // scripts.
     let output = '';
     let failed = false;
-    try {
-      output = execFileSync(process.execPath, argv, {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (error) {
-      failed = true;
-      output = `${error.stdout || ''}${error.stderr || ''}`;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        output = execFileSync(process.execPath, argv, {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        failed = false;
+      } catch (error) {
+        failed = true;
+        output = `${error.stdout || ''}${error.stderr || ''}`;
+      }
+      if (!failed || output.trim() !== '') break;
+    }
+    if (failed && output.trim() === '') {
+      output = '(wgc exited non-zero twice and printed nothing at all, so it never '
+        + 'reported on these schemas. That is an environment problem rather than a '
+        + 'composition one: check for memory pressure from anything else running.)';
     }
 
     const routes = !failed && existsSync(out) ? readRoutes(out) : null;

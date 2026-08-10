@@ -155,7 +155,7 @@ OVERRIDE_CASES="$REPO_ROOT/scripts/override-cases.mjs"
 
 # -- chapter 13's modelling problems -----------------------------------------
 
-# Fourteen cases across four families: what the composer does with an enum
+# Sixteen cases across four families: what the composer does with an enum
 # declared twice, with a value type declared twice, with a scalar two subgraphs
 # mean different things by, and with Query.node in more than one place. Most of
 # them compose, so what is asserted is the composed client schema and the
@@ -1846,7 +1846,7 @@ section rather than a loosened assertion.'
 
     # -- 8b3. the modelling problems, which is chapter 13's subject ---------
 
-    # Fourteen cases, and none of them needs a service running either. The
+    # Sixteen cases, and none of them needs a service running either. The
     # difference from the two scripts above is what is asserted: most of these
     # compose, so the assertion is on the composed client schema and on the
     # routing table rather than on an error. An enum that quietly loses a
@@ -1867,7 +1867,7 @@ interface whose implementation has no key. If wgc turned that crash into an
 error message, that is a paragraph to rewrite rather than an assertion to
 loosen.'
         fi
-        step_ok 'the fourteen modelling behaviours chapter 13 prints are the ones wgc produces'
+        step_ok 'the sixteen modelling behaviours chapter 13 prints are the ones wgc produces'
     fi
 
     # -- 8c. chapter 10: a router in front of the seven ---------------------

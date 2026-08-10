@@ -259,17 +259,33 @@ function compose(testCase) {
     // The package's own entry point rather than the .bin shim, because the shim
     // is a .cmd on Windows and running that needs a shell.
     const wgc = join(repoRoot, 'node_modules', 'wgc', 'dist', 'src', 'index.js');
+    // Run it, and be willing to run it twice. A composer that exits non-zero
+    // having printed nothing at all has not told us anything about these
+    // schemas, and this script used to report that as "the error chapter 9
+    // prints is no longer the error the composer produces". Seen during a full
+    // verify.ps1 run with seven .NET services and PostgreSQL already up; the
+    // same case passed on its own straight afterwards. Added in chapter 13,
+    // where the same flake hit scripts/modeling-cases.mjs first.
     let output = '';
     let failed = false;
-    try {
-      output = execFileSync(
-        process.execPath,
-        [wgc, 'router', 'compose', '-i', join(dir, 'graph.yaml'), '-o', join(dir, 'out.json')],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      );
-    } catch (error) {
-      failed = true;
-      output = `${error.stdout || ''}${error.stderr || ''}`;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        output = execFileSync(
+          process.execPath,
+          [wgc, 'router', 'compose', '-i', join(dir, 'graph.yaml'), '-o', join(dir, 'out.json')],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        failed = false;
+      } catch (error) {
+        failed = true;
+        output = `${error.stdout || ''}${error.stderr || ''}`;
+      }
+      if (!failed || output.trim() !== '') break;
+    }
+    if (failed && output.trim() === '') {
+      output = '(wgc exited non-zero twice and printed nothing at all, so it never '
+        + 'reported on these schemas. That is an environment problem rather than a '
+        + 'composition one: check for memory pressure from anything else running.)';
     }
     return { output, failed };
   } finally {

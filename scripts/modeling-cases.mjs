@@ -88,6 +88,51 @@ const CASES = [
     routes: { 'Query.node': ['nodes'], 'Query.nodes': ['nodes'] },
   },
 
+  // -- how far @requires stretches (chapter 11's two open questions) -------
+  {
+    name: 'requires-a-nested-field-set',
+    summary: 'inventory requires price { amount }, which pricing owns',
+    // Chapter 11 left "nested field sets" here. It composes. Inventory
+    // declares Pricing's Money-valued field @external and requires a path
+    // through it, which is a field set two levels deep across a boundary.
+    edits: [
+      { file: 'inventory', from: '    import: ["@key", "@tag", "FieldSet"]',
+        to: '    import: ["@external", "@key", "@requires", "@shareable", "@tag", "FieldSet"]' },
+      { file: 'inventory', from: 'type Product @key(fields: "id") {\n  availableQuantity: Int!\n  id: ID!\n}',
+        to: 'type Product @key(fields: "id") {\n  availableQuantity: Int!\n'
+          + '  restockThreshold: Int! @requires(fields: "price { amount }")\n  id: ID!\n'
+          + '  price: Money! @external\n}\n\ntype Money @shareable {\n  amount: Decimal!\n  currency: String!\n}\n\nscalar Decimal' },
+      { file: 'inventory', from: ') repeatable on SCHEMA',
+        to: ') repeatable on SCHEMA\n\ndirective @external on OBJECT | FIELD_DEFINITION\n\n'
+          + 'directive @requires(fields: FieldSet!) on FIELD_DEFINITION\n\n'
+          + 'directive @shareable repeatable on OBJECT | FIELD_DEFINITION' },
+    ],
+    expectSuccess: true,
+    expect: [],
+    expectInSchema: ['restockThreshold: Int!'],
+    routes: { 'Product.restockThreshold': ['inventory'], 'Product.price': ['pricing'] },
+  },
+  {
+    name: 'requires-across-two-other-subgraphs',
+    summary: 'pricing requires one field from catalog and one from inventory',
+    // Chapter 11's other question. Also composes, and the routing table is the
+    // finding: the required fields stay with their owners and the requiring
+    // field stays with its own, so one directive names three services.
+    edits: [
+      { file: 'pricing', from: '  shippingCost: Money! @requires(fields: "category")',
+        to: '  shippingCost: Money! @requires(fields: "category availableQuantity")' },
+      { file: 'pricing', from: '  category: ProductCategory! @external',
+        to: '  category: ProductCategory! @external\n  availableQuantity: Int! @external' },
+    ],
+    expectSuccess: true,
+    expect: [],
+    routes: {
+      'Product.category': ['catalog'],
+      'Product.shippingCost': ['pricing'],
+      'Product.availableQuantity': ['inventory'],
+    },
+  },
+
   // -- enums ---------------------------------------------------------------
   {
     name: 'enum-in-both-positions-must-match',
