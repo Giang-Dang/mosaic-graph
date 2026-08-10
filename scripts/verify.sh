@@ -49,7 +49,7 @@
 
 set -u
 
-# The first of Mosaic's six subgraph ports. They are consecutive from here, in
+# The first of Mosaic's seven subgraph ports. They are consecutive from here, in
 # the order federation/mosaic.yaml lists them - catalog, pricing, inventory,
 # accounts, reviews, ordering. Two ports until chapter 12, and 5100 was the
 # monolith's; nothing listens on 5100 any more.
@@ -63,6 +63,9 @@ INVENTORY_PORT="$((FIRST_SUBGRAPH_PORT + 2))"
 ACCOUNTS_PORT="$((FIRST_SUBGRAPH_PORT + 3))"
 MOSAIC_REVIEWS_SUBGRAPH_PORT="$((FIRST_SUBGRAPH_PORT + 4))"
 ORDERING_PORT="$((FIRST_SUBGRAPH_PORT + 5))"
+# The seventh, added at chapter 13. It owns Query.node and Query.nodes on
+# behalf of the whole graph and has no database of its own.
+NODES_PORT="$((FIRST_SUBGRAPH_PORT + 6))"
 
 STARTUP_TIMEOUT_SECONDS="${MOSAIC_STARTUP_TIMEOUT:-60}"
 DATABASE_TIMEOUT_SECONDS="${MOSAIC_DATABASE_TIMEOUT:-90}"
@@ -97,7 +100,7 @@ SAMPLE_SCHEMA_DIR="$REPO_ROOT/schema/samples"
 POSTMAN_COLLECTION="$REPO_ROOT/postman/mosaic-subgraphs.postman_collection.json"
 POSTMAN_ENVIRONMENT="$REPO_ROOT/postman/mosaic-subgraphs.local.postman_environment.json"
 
-# -- the six subgraphs -------------------------------------------------------
+# -- the seven subgraphs -----------------------------------------------------
 
 MOSAIC_CATALOG_URL="http://localhost:$CATALOG_SUBGRAPH_PORT"
 MOSAIC_PRICING_URL="http://localhost:$PRICING_PORT"
@@ -105,6 +108,7 @@ MOSAIC_INVENTORY_URL="http://localhost:$INVENTORY_PORT"
 MOSAIC_ACCOUNTS_URL="http://localhost:$ACCOUNTS_PORT"
 MOSAIC_REVIEWS_URL="http://localhost:$MOSAIC_REVIEWS_SUBGRAPH_PORT"
 MOSAIC_ORDERING_URL="http://localhost:$ORDERING_PORT"
+MOSAIC_NODES_URL="http://localhost:$NODES_PORT"
 
 # Kept for the steps that still name Catalog directly.
 CATALOG_SUBGRAPH_URL="$MOSAIC_CATALOG_URL"
@@ -149,6 +153,23 @@ ENTITY_CASES="$REPO_ROOT/scripts/entity-cases.mjs"
 # federation 2.7 label wgc does not implement.
 OVERRIDE_CASES="$REPO_ROOT/scripts/override-cases.mjs"
 
+# -- chapter 13's modelling problems -----------------------------------------
+
+# Fourteen cases across four families: what the composer does with an enum
+# declared twice, with a value type declared twice, with a scalar two subgraphs
+# mean different things by, and with Query.node in more than one place. Most of
+# them compose, so what is asserted is the composed client schema and the
+# routing table rather than an exit code.
+#
+# The @interfaceObject cases run against samples/interface-object, because
+# Mosaic has no interface whose implementations live in two services. Those two
+# schemas are checked for drift below; the sample's own router is never
+# started here.
+MODELING_CASES="$REPO_ROOT/scripts/modeling-cases.mjs"
+INTERFACE_OBJECT_DIR="$REPO_ROOT/samples/interface-object"
+NODES_POSTMAN="$REPO_ROOT/postman/mosaic-nodes.postman_collection.json"
+NODES_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-nodes.local.postman_environment.json"
+
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
 # Product.shippingCost, read off each subgraph's own request timeline. They are
@@ -179,10 +200,13 @@ pricing:51:1
 inventory:26:1
 reviews:26:1"
 
-# The two that answer nothing for this query, and should say nothing about it.
-SILENT_FOR_STOREFRONT="accounts ordering"
+# The three that answer nothing for this query, and should say nothing about
+# it. Nodes joined the list at chapter 13 by being the seventh subgraph and
+# having no part in a storefront query: the only way into it is Query.node.
+SILENT_FOR_STOREFRONT="accounts ordering nodes"
 
-# The six subgraphs since chapter 12, written as <name>:<port>. Every file under
+# The seven subgraphs, six since chapter 12 and one since chapter 13,
+# written as <name>:<port>. Every file under
 # schema/ is what `_service { sdl }` returns, which is what a composer reads, so
 # checking them is a check on the federated contract and not only on the SDL.
 # Each subgraph is a separate contract with the composer, so a drift in any of
@@ -192,7 +216,8 @@ pricing:$PRICING_PORT
 inventory:$INVENTORY_PORT
 accounts:$ACCOUNTS_PORT
 reviews:$MOSAIC_REVIEWS_SUBGRAPH_PORT
-ordering:$ORDERING_PORT"
+ordering:$ORDERING_PORT
+nodes:$NODES_PORT"
 
 # Which project produces each subgraph and which committed file it has to keep
 # matching. Looked up by name rather than carried as two more columns in the
@@ -210,6 +235,7 @@ subgraph_project() {
         accounts)  printf '%s' "$REPO_ROOT/src/Mosaic.Accounts/Mosaic.Accounts.csproj" ;;
         reviews)   printf '%s' "$REPO_ROOT/src/Mosaic.Reviews/Mosaic.Reviews.csproj" ;;
         ordering)  printf '%s' "$REPO_ROOT/src/Mosaic.Ordering/Mosaic.Ordering.csproj" ;;
+        nodes)     printf '%s' "$REPO_ROOT/src/Mosaic.Nodes/Mosaic.Nodes.csproj" ;;
     esac
 }
 
@@ -976,7 +1002,7 @@ subgraph that would break composition with the other.
 $(schema_diff "$committed" "$exported" "$name")"
     fi
 done
-step_ok 'all six subgraph schemas match the committed snapshots'
+step_ok 'all seven subgraph schemas match the committed snapshots'
 
 # -- 4. the three sample projects -------------------------------------------
 
@@ -1099,7 +1125,60 @@ the chapter needs rewriting rather than this check needing loosening.'
     step_ok 'the placement sample still leaks exactly the field chapter 8 prints'
 fi
 
-# -- 5. start the six subgraphs ----------------------------------------------
+# -- 4c. the interface-object sample ----------------------------------------
+
+# Chapter 13's two sample subgraphs. Neither is ever started here: what the
+# gate needs from them is that their committed SDL is what the projects export,
+# because scripts/modeling-cases.mjs composes those files and asserts what the
+# composer says about them. A drift would make three of that script's cases
+# assert something about a schema nobody publishes.
+if [ ! -d "$INTERFACE_OBJECT_DIR" ]; then
+    step_skip 'interface-object sample' 'samples/interface-object does not exist yet'
+else
+    for sample in interface-object-library interface-object-ratings; do
+        case "$sample" in
+            interface-object-library) io_project="$INTERFACE_OBJECT_DIR/Mosaic.Sample.InterfaceObject.Library" ;;
+            interface-object-ratings) io_project="$INTERFACE_OBJECT_DIR/Mosaic.Sample.InterfaceObject.Ratings" ;;
+        esac
+
+        if ! dotnet run --project "$io_project" -c Release --no-build --no-launch-profile \
+                -- schema export --output "$TEMP_DIR/$sample.graphql"; then
+            step_fail "interface-object sample ($sample)" 'Exporting the schema failed; its output above says why.'
+        fi
+        if [ ! -f "$SAMPLE_SCHEMA_DIR/$sample.graphql" ]; then
+            step_fail "interface-object sample ($sample)" "There is no committed snapshot at schema/samples/$sample.graphql."
+        fi
+        if ! same_text "$SAMPLE_SCHEMA_DIR/$sample.graphql" "$TEMP_DIR/$sample.graphql"; then
+            step_fail "interface-object sample ($sample)" "schema/samples/$sample.graphql is not what the project exports.
+
+$(schema_diff "$SAMPLE_SCHEMA_DIR/$sample.graphql" "$TEMP_DIR/$sample.graphql" "$sample")"
+        fi
+    done
+
+    # The directives by name, for the same reason the placement check names a
+    # field: the claim is that HotChocolate emits @interfaceObject on the
+    # contributing type and @key on the owning interface, and a release that
+    # stopped doing either would leave both files looking plausible.
+    ratings_flat="$(tr -d '\r' < "$SAMPLE_SCHEMA_DIR/interface-object-ratings.graphql" | tr '\n' ' ' | tr -s ' ')"
+    case "$ratings_flat" in
+        *'type Media @key(fields: "id") @interfaceObject'*) ;;
+        *)
+            step_fail 'interface-object sample' 'The ratings subgraph no longer declares Media as @key + @interfaceObject, which is the whole sample.'
+            ;;
+    esac
+
+    library_flat="$(tr -d '\r' < "$SAMPLE_SCHEMA_DIR/interface-object-library.graphql" | tr '\n' ' ' | tr -s ' ')"
+    case "$library_flat" in
+        *'interface Media @key(fields: "id")'*) ;;
+        *)
+            step_fail 'interface-object sample' 'The library subgraph no longer keys the Media interface, and an @interfaceObject needs an entity interface to attach to.'
+            ;;
+    esac
+
+    step_ok 'the interface-object sample still declares the two directives chapter 13 prints'
+fi
+
+# -- 5. start the seven subgraphs --------------------------------------------
 
 for entry in $SUBGRAPHS; do
     name="${entry%%:*}"
@@ -1110,7 +1189,7 @@ Stop it first - a stray 'docker compose up', a debugger, or an earlier run of th
     fi
 done
 
-# One at a time rather than all six at once, because each of them creates and
+# One at a time rather than all seven at once, because each of them creates and
 # seeds a database on the way up and doing that in sequence makes a failure
 # readable.
 #
@@ -1210,7 +1289,7 @@ A schema printed without its key directives composes into a graph with no
 entities in it, which is the failure chapter 7 warned about."
     fi
 done
-step_ok 'all six subgraphs publish the committed schemas through _service'
+step_ok 'all seven subgraphs publish the committed schemas through _service'
 
 # -- 5d. the catalog half ---------------------------------------------------
 
@@ -1657,7 +1736,7 @@ else
     step_ok 'postman collection'
 fi
 
-# -- 8. the six subgraphs still compose -------------------------------------
+# -- 8. the seven subgraphs still compose -------------------------------------
 
 # wgc is a local dev dependency, pinned in package.json beside newman. It
 # composes from committed schema files and talks to nothing. It is looked for
@@ -1765,7 +1844,33 @@ section rather than a loosened assertion.'
         step_ok 'the nine @override behaviours chapter 12 prints are the ones wgc produces'
     fi
 
-    # -- 8c. chapter 10: a router in front of the six -----------------------
+    # -- 8b3. the modelling problems, which is chapter 13's subject ---------
+
+    # Fourteen cases, and none of them needs a service running either. The
+    # difference from the two scripts above is what is asserted: most of these
+    # compose, so the assertion is on the composed client schema and on the
+    # routing table rather than on an error. An enum that quietly loses a
+    # member and a value type that quietly becomes nullable are both successful
+    # compositions.
+    if [ ! -f "$MODELING_CASES" ]; then
+        step_skip 'modelling cases' 'scripts/modeling-cases.mjs does not exist yet'
+    elif ! command -v node >/dev/null 2>&1; then
+        step_fail 'modelling cases' 'node is not on PATH; it is needed to run scripts/modeling-cases.mjs.'
+    else
+        node "$MODELING_CASES"
+        if [ $? -ne 0 ]; then
+            step_fail 'modelling cases' 'scripts/modeling-cases.mjs failed.
+One of the behaviours chapter 13 describes has changed. The output above says
+which case and how. Two of them are worth reading carefully before assuming the
+case is at fault: the enum merge rules, and the composer crash on an entity
+interface whose implementation has no key. If wgc turned that crash into an
+error message, that is a paragraph to rewrite rather than an assertion to
+loosen.'
+        fi
+        step_ok 'the fourteen modelling behaviours chapter 13 prints are the ones wgc produces'
+    fi
+
+    # -- 8c. chapter 10: a router in front of the seven ---------------------
 
     # The first section that asks the graph a question rather than asking a
     # service one. It runs here, after the composed config has been checked
@@ -1891,6 +1996,40 @@ prints.'
             step_ok 'a field that needs the other service is answered, and its plan says so'
         fi
 
+        # -- chapter 13 -----------------------------------------------------
+
+        # One identifier and four owners, plus the cursor fix. Every request
+        # goes to the router, because every one of them is about something no
+        # single service can do: the node service holds four two-line stubs and
+        # no data, so an answer coming back at all is the router having
+        # followed a stub to whoever owns the rest.
+        if [ ! -f "$NODES_POSTMAN" ] || [ ! -f "$NODES_POSTMAN_ENV" ]; then
+            step_skip 'nodes postman' 'the nodes collection or its environment is missing from postman/'
+        elif [ -z "$NEWMAN_BIN" ]; then
+            step_skip 'nodes postman' 'newman is not installed - run npm install first'
+        else
+            if [ "$NEWMAN_VIA_NPX" -eq 1 ]; then
+                "$NEWMAN_BIN" --no newman run "$NODES_POSTMAN" \
+                    --environment "$NODES_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --env-var "nodesUrl=$MOSAIC_NODES_URL" \
+                    --bail
+            else
+                "$NEWMAN_BIN" run "$NODES_POSTMAN" \
+                    --environment "$NODES_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --env-var "nodesUrl=$MOSAIC_NODES_URL" \
+                    --bail
+            fi
+            if [ $? -ne 0 ]; then
+                step_fail 'nodes postman' 'newman failed; its output above says which request failed.
+The last two requests are the cursor fix and they fail against tag ch12 on
+purpose. The four before them are the node field, and a null in any of them is
+the router not following a stub to its owner.'
+            fi
+            step_ok 'one identifier resolves through four owners, and a page does not repeat a row'
+        fi
+
         # Eleven cases: three composition, one against Mosaic through _entities,
         # and seven on the sample under samples/entity-resolution, which that
         # script starts and stops itself. Same arrangement as chapters 9 and 10
@@ -2010,7 +2149,172 @@ and nothing in that query is its to answer."
                 fi
             done
         done
-        step_ok 'the storefront costs 25 more resolvers in pricing with shippingCost, no more SQL anywhere, and nothing at all in accounts or ordering'
+        step_ok 'the storefront costs 25 more resolvers in pricing with shippingCost, no more SQL anywhere, and nothing at all in accounts, ordering or nodes'
+
+        # -- 8e. chapter 13: one identifier, four types -----------------
+
+        # The node field, through the router, for each of the four types the
+        # graph considers globally addressable. Every one of them crosses at
+        # least one boundary on purpose: the node service holds nothing but the
+        # key, so a field coming back at all is evidence that the router took
+        # the stub and went to the owner.
+        printf '{"query":"{ browseProducts(first: 1) { nodes { id reviews(first: 20) { nodes { id author { id } } } } } }"}' \
+            > "$TEMP_DIR/node-seed-request.json"
+        post_graphql "$ROUTER_URL" "$TEMP_DIR/node-seed-request.json" \
+            "$TEMP_DIR/node-seed.json" 'node identifiers'
+
+        node_seed="$(python3 - "$TEMP_DIR/node-seed.json" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+product = (payload.get("data") or {}).get("browseProducts", {}).get("nodes", [None])[0] or {}
+reviews = (product.get("reviews") or {}).get("nodes") or []
+review = reviews[0] if reviews else {}
+authors = [r.get("author", {}).get("id", "") for r in reviews if r.get("author")]
+
+print("%s\t%s\t%s\t%s" % (
+    product.get("id", ""),
+    review.get("id", ""),
+    (review.get("author") or {}).get("id", ""),
+    ",".join(authors)))
+PY
+)"
+        node_seed="$(printf '%s' "$node_seed" | tr -d '\r')"
+        node_product_id="$(printf '%s' "$node_seed" | cut -f1)"
+        node_review_id="$(printf '%s' "$node_seed" | cut -f2)"
+        node_customer_id="$(printf '%s' "$node_seed" | cut -f3)"
+        node_author_ids="$(printf '%s' "$node_seed" | cut -f4)"
+
+        if [ -z "$node_product_id" ] || [ -z "$node_review_id" ] || [ -z "$node_customer_id" ]; then
+            step_fail 'node identifiers' 'The first product has no reviews, so this step cannot obtain a Review or a Customer identifier.'
+        fi
+
+        # Seven of the twelve seeded customers have no orders, so walk the
+        # reviewers until one of them does. Chapter 8's open item says the same
+        # thing about the same seed data: a fair description of the schema
+        # rather than a workaround, and fragile.
+        node_order_id=''
+        for candidate in $(printf '%s' "$node_author_ids" | tr ',' ' '); do
+            printf '{"query":"{ ordersByCustomer(customerId: \\"%s\\") { id } }"}' "$candidate" \
+                > "$TEMP_DIR/node-orders-request.json"
+            post_graphql "$ROUTER_URL" "$TEMP_DIR/node-orders-request.json" \
+                "$TEMP_DIR/node-orders.json" 'node identifiers'
+            node_order_id="$(python3 -c 'import json,sys; o=(json.load(open(sys.argv[1], encoding="utf-8")).get("data") or {}).get("ordersByCustomer") or []; print(o[0]["id"] if o else "")' \
+                "$TEMP_DIR/node-orders.json" | tr -d '\r')"
+            [ -n "$node_order_id" ] && break
+        done
+
+        if [ -z "$node_order_id" ]; then
+            step_fail 'node identifiers' 'No reviewer of the first product has an order, so this step cannot obtain an Order identifier.'
+        fi
+
+        # One field per type, and each owned by a service other than nodes:
+        # title is catalog's, displayName is accounts', rating is reviews' and
+        # placedAt is ordering's.
+        for expectation in "Product:title:$node_product_id" \
+                           "Customer:displayName:$node_customer_id" \
+                           "Review:rating:$node_review_id" \
+                           "Order:placedAt:$node_order_id"; do
+            node_type="$(printf '%s' "$expectation" | cut -d: -f1)"
+            node_field="$(printf '%s' "$expectation" | cut -d: -f2)"
+            node_id="$(printf '%s' "$expectation" | cut -d: -f3)"
+
+            printf '{"query":"{ node(id: \\"%s\\") { __typename ... on %s { %s } } }"}' \
+                "$node_id" "$node_type" "$node_field" > "$TEMP_DIR/node-request.json"
+            post_graphql "$ROUTER_URL" "$TEMP_DIR/node-request.json" \
+                "$TEMP_DIR/node-answer.json" "node($node_type)"
+
+            node_answer="$(python3 - "$TEMP_DIR/node-answer.json" "$node_field" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    node = (json.load(handle).get("data") or {}).get("node") or {}
+
+print("%s\t%s" % (node.get("__typename", ""), "" if node.get(sys.argv[2]) is None else "present"))
+PY
+)"
+            node_answer="$(printf '%s' "$node_answer" | tr -d '\r')"
+            if [ "$(printf '%s' "$node_answer" | cut -f1)" != "$node_type" ]; then
+                step_fail "node($node_type)" "node() answered __typename $(printf '%s' "$node_answer" | cut -f1) for a $node_type identifier.
+The node service decodes the type name out of the identifier, so this is either
+a change to the identifier format or a stub type that went missing."
+            fi
+            if [ "$(printf '%s' "$node_answer" | cut -f2)" != "present" ]; then
+                step_fail "node($node_type)" "node() answered null for $node_type.$node_field.
+That field belongs to a service other than nodes, so a null here means the
+router did not follow the stub to its owner. Chapter 13 is built on it doing
+exactly that."
+            fi
+        done
+        step_ok 'node() answers for all four addressable types, with fields from four other services'
+
+        # -- 8f. chapter 13: the cursor carries its tiebreaker ----------
+
+        # The bug chapter 4 shipped and chapter 13 found. browseProducts is
+        # projected from the selection set, and the keyset cursor is built from
+        # the materialised entity, so a client asking for nothing but title used
+        # to get cursors whose tiebreaker was an empty Guid and a second page
+        # that repeated a row.
+        #
+        # Asked without id on purpose, and through the router on purpose:
+        # adding any field from another subgraph makes the planner ask catalog
+        # for id anyway and hides the whole thing, which is why eight chapters
+        # of federated queries never tripped over it.
+        printf '{"query":"{ browseProducts(first: 2) { edges { cursor node { title } } } }"}' \
+            > "$TEMP_DIR/cursor-page1-request.json"
+        post_graphql "$ROUTER_URL" "$TEMP_DIR/cursor-page1-request.json" \
+            "$TEMP_DIR/cursor-page1.json" 'cursor tiebreaker'
+
+        cursor_page1="$(python3 - "$TEMP_DIR/cursor-page1.json" <<'PY'
+import base64, json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    edges = (json.load(handle).get("data") or {}).get("browseProducts", {}).get("edges") or []
+
+last = edges[-1]["cursor"] if edges else ""
+decoded = base64.b64decode(last).decode("utf-8", "replace") if last else ""
+print("%s\t%s\t%s" % (last, decoded, "|".join(e["node"]["title"] for e in edges)))
+PY
+)"
+        cursor_page1="$(printf '%s' "$cursor_page1" | tr -d '\r')"
+        last_cursor="$(printf '%s' "$cursor_page1" | cut -f1)"
+        decoded_cursor="$(printf '%s' "$cursor_page1" | cut -f2)"
+        page1_titles="$(printf '%s' "$cursor_page1" | cut -f3)"
+
+        case "$decoded_cursor" in
+            *00000000-0000-0000-0000-000000000000*)
+                step_fail 'cursor tiebreaker' "The cursor for a page selecting only title decodes to $decoded_cursor.
+The all-zero Guid means the projection dropped the key the cursor sorts on.
+QueryContext.Include(p => p.Id) in CatalogService is what puts it back, and
+Product needs a parameterless constructor for that to work."
+                ;;
+        esac
+
+        printf '{"query":"{ browseProducts(first: 2, after: \\"%s\\") { edges { node { title } } } }"}' \
+            "$last_cursor" > "$TEMP_DIR/cursor-page2-request.json"
+        post_graphql "$ROUTER_URL" "$TEMP_DIR/cursor-page2-request.json" \
+            "$TEMP_DIR/cursor-page2.json" 'cursor tiebreaker'
+
+        page2_titles="$(python3 -c 'import json,sys; e=(json.load(open(sys.argv[1], encoding="utf-8")).get("data") or {}).get("browseProducts", {}).get("edges") or []; print("|".join(x["node"]["title"] for x in e))' \
+            "$TEMP_DIR/cursor-page2.json" | tr -d '\r')"
+
+        old_ifs="$IFS"
+        IFS='|'
+        for title in $page2_titles; do
+            case "|$page1_titles|" in
+                *"|$title|"*)
+                    IFS="$old_ifs"
+                    step_fail 'cursor tiebreaker' "Page two of browseProducts repeats $title, which page one already returned.
+A keyset cursor that cannot tell two rows apart re-reads the row it should have
+skipped. This is the defect chapter 13 fixes, and it is invisible in the
+published schema, so nothing else in this gate would catch it."
+                    ;;
+            esac
+        done
+        IFS="$old_ifs"
+        step_ok 'a page selecting only title carries real cursors and does not repeat a row'
 
         # Down rather than stop, and now rather than in the trap, because the
         # federated-wire section below wants this port.

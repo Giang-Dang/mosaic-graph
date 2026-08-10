@@ -18,6 +18,9 @@
 # Order is not significant to the composer and is significant to a reader, so
 # these are listed in the order chapter 12 extracted them: the service that was
 # already out, then the three that reference nobody, then the two that do.
+# Chapter 13 added a seventh at the end, which is the only entry here that owns
+# no domain: it exists to publish the two root fields that turn a global
+# identifier back into the thing it names.
 
 version: 1
 
@@ -51,3 +54,8 @@ subgraphs:
     routing_url: http://localhost:5106/graphql
     schema:
       file: ../schema/ordering.graphql
+
+  - name: nodes
+    routing_url: http://localhost:5107/graphql
+    schema:
+      file: ../schema/nodes.graphql

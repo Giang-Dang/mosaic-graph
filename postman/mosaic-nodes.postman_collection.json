@@ -1,0 +1,442 @@
+{
+  "info": {
+    "_postman_id": "d51a8c36-7e94-4f10-bc27-3a6f92d81e45",
+    "name": "Mosaic nodes - chapter 13",
+    "description": "One identifier, four owners, as chapter 13 of Federated GraphQL on .NET measures it.\n\nEvery request goes to the router, because every one of them is about something no single service can do. The node service holds four two-line stub types and no data at all; what makes an answer come back is the router taking a stub and going to whichever subgraph owns the rest.\n\nStart the graph before running it:\n\n    docker compose up -d --build mosaic-db mosaic-catalog mosaic-pricing \\\n        mosaic-inventory mosaic-accounts mosaic-reviews mosaic-ordering \\\n        mosaic-nodes mosaic-router\n\nNothing here writes, so the collection can be run twice against the same processes. The last two requests are the cursor fix, and they fail against tag ch12 on purpose.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Find one identifier of each kind",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const product = body.data.browseProducts.nodes[0];",
+              "const review = product.reviews.nodes[0];",
+              "",
+              "pm.test(\"the first product has a review to walk through\", function () {",
+              "    pm.expect(review, \"review\").to.be.an(\"object\");",
+              "    pm.expect(review.author, \"review.author\").to.be.an(\"object\");",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"productId\", product.id);",
+              "pm.collectionVariables.set(\"reviewId\", review.id);",
+              "pm.collectionVariables.set(\"customerId\", review.author.id);",
+              "",
+              "// The identifier is the type name and the key, base64 encoded. That is what",
+              "// lets one root field dispatch to four owners: the node service reads the type",
+              "// name out of the string and nothing else in the graph has to be asked.",
+              "pm.test(\"an identifier says what it identifies\", function () {",
+              "    const decoded = Buffer.from(product.id, \"base64\").toString(\"utf8\");",
+              "    pm.expect(decoded.startsWith(\"Product:\"), decoded).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  browseProducts(first: 1) {\n    nodes {\n      id\n      reviews(first: 1) {\n        nodes { id author { id } }\n      }\n    }\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        },
+        "description": "Everything else in this collection needs a real global identifier, and Mosaic has no root field that lists customers or reviews. So the first request walks in through a product and saves what it finds. The identifiers are opaque base64 and none of the three services that produced them agreed about anything except their format."
+      }
+    },
+    {
+      "name": "node() on a product",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const node = body.data.node;",
+              "",
+              "pm.test(\"the router worked out what kind of thing it was\", function () {",
+              "    pm.expect(node.__typename).to.eql(\"Product\");",
+              "});",
+              "",
+              "// None of these fields exists in the node service. Every one of them is",
+              "// evidence that the router took a stub and went to the owner for the rest.",
+              "pm.test(\"three other services filled it in\", function () {",
+              "    pm.expect(node.title, \"title (catalog)\").to.be.a(\"string\").and.not.empty;",
+              "    pm.expect(node.price.amount, \"price (pricing)\").to.be.a(\"number\");",
+              "    pm.expect(node.availableQuantity, \"availableQuantity (inventory)\").to.be.a(\"number\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  node(id: \"{{productId}}\") {\n    __typename\n    id\n    ... on Product {\n      title\n      price { amount currency }\n      availableQuantity\n    }\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        },
+        "description": "The whole point of chapter 13, in one request. The node service holds nothing but the identifier: title comes from Catalog, price from Pricing and availableQuantity from Inventory, and the router assembled all three from a stub carrying one key."
+      }
+    },
+    {
+      "name": "node() on a review",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const node = body.data.node;",
+              "",
+              "pm.test(\"a review this time\", function () {",
+              "    pm.expect(node.__typename).to.eql(\"Review\");",
+              "});",
+              "",
+              "pm.test(\"the review and its author came from two different services\", function () {",
+              "    pm.expect(node.rating).to.be.within(1, 5);",
+              "    pm.expect(node.author.displayName, \"author.displayName\").to.be.a(\"string\").and.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  node(id: \"{{reviewId}}\") {\n    __typename\n    ... on Review {\n      rating\n      author { displayName }\n    }\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        },
+        "description": "The same field, a different type, and one more hop: the review comes from Reviews and its author from Accounts, so this answer is assembled from three services none of which was named in the request."
+      }
+    },
+    {
+      "name": "nodes() with a mixed list",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const nodes = body.data.nodes;",
+              "",
+              "pm.test(\"three answers, in the order they were asked for\", function () {",
+              "    pm.expect(nodes.map((n) => n.__typename)).to.eql([\"Product\", \"Review\", \"Customer\"]);",
+              "});",
+              "",
+              "pm.test(\"each one carries a field its own owner supplied\", function () {",
+              "    pm.expect(nodes[0].title, \"Product.title\").to.be.a(\"string\").and.not.empty;",
+              "    pm.expect(nodes[1].rating, \"Review.rating\").to.be.a(\"number\");",
+              "    pm.expect(nodes[2].displayName, \"Customer.displayName\").to.be.a(\"string\").and.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  nodes(ids: [\"{{productId}}\", \"{{reviewId}}\", \"{{customerId}}\"]) {\n    __typename\n    ... on Product { title }\n    ... on Review { rating }\n    ... on Customer { displayName }\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        },
+        "description": "The plural form, given three identifiers of three different types at once. Worth running for what the response order tells you: the list comes back positionally, the way _entities does, so a client can line the answers up with what it asked for."
+      }
+    },
+    {
+      "name": "An identifier for a type nothing addresses",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "// A GraphQL error rather than an HTTP one, which is the specification's answer",
+              "// for a request that parsed and could not be served.",
+              "pm.test(\"the graph refuses, and says which service refused\", function () {",
+              "    pm.expect(body.errors, \"errors\").to.be.an(\"array\").and.not.empty;",
+              "    pm.expect(JSON.stringify(body.errors)).to.include(\"nodes\");",
+              "});",
+              "",
+              "pm.test(\"and it names the type it has no resolver for\", function () {",
+              "    pm.expect(JSON.stringify(body.errors)).to.include(\"OrderLine\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  node(id: \"T3JkZXJMaW5lOiA=\") {\n    __typename\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        },
+        "description": "OrderLine is a type in the graph and is not a Node: it has no identifier outside the order it belongs to. Hand the node field an identifier naming one anyway and the failure is specific and comes from the node service, which is the best available outcome for a request nobody can serve."
+      }
+    },
+    {
+      "name": "A page that carries its tiebreaker",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const edges = body.data.browseProducts.edges;",
+              "",
+              "pm.test(\"two products\", function () {",
+              "    pm.expect(edges).to.have.lengthOf(2);",
+              "});",
+              "",
+              "// The cursor is the sort key and the identifier, in the clear once decoded.",
+              "// An all-zero Guid is the projection having dropped the key.",
+              "pm.test(\"every cursor carries a real identifier\", function () {",
+              "    for (const edge of edges) {",
+              "        const decoded = Buffer.from(edge.cursor, \"base64\").toString(\"utf8\");",
+              "        pm.expect(decoded, decoded).to.not.include(\"00000000-0000-0000-0000-000000000000\");",
+              "    }",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"pageOneCursor\", edges[1].cursor);",
+              "pm.collectionVariables.set(\"pageOneTitles\", JSON.stringify(edges.map((e) => e.node.title)));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  browseProducts(first: 2) {\n    edges {\n      cursor\n      node { title }\n    }\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        },
+        "description": "The cursor bug chapter 13 found and fixed. browseProducts is projected from the selection set, and its keyset cursor is serialised from the entity that projection built, so asking for nothing but the title used to produce cursors that could not tell two rows apart. Nothing about it is visible in the schema."
+      }
+    },
+    {
+      "name": "And a second page that does not repeat one",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const titles = body.data.browseProducts.edges.map((e) => e.node.title);",
+              "const pageOne = JSON.parse(pm.collectionVariables.get(\"pageOneTitles\"));",
+              "",
+              "pm.test(\"two more products\", function () {",
+              "    pm.expect(titles).to.have.lengthOf(2);",
+              "});",
+              "",
+              "pm.test(\"none of them was on page one\", function () {",
+              "    for (const title of titles) {",
+              "        pm.expect(pageOne, \"page one was \" + pageOne.join(\", \")).to.not.include(title);",
+              "    }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  browseProducts(first: 2, after: \"{{pageOneCursor}}\") {\n    edges { node { title } }\n  }\n}",
+            "variables": "{}"
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        },
+        "description": "The consequence of the request above. With a tiebreaker the cursor can name the row it stopped at; without one the second page starts again at a row the first page already returned. Run this against tag ch12 and it fails."
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "productId",
+      "value": ""
+    },
+    {
+      "key": "reviewId",
+      "value": ""
+    },
+    {
+      "key": "customerId",
+      "value": ""
+    },
+    {
+      "key": "pageOneCursor",
+      "value": ""
+    },
+    {
+      "key": "pageOneTitles",
+      "value": "[]"
+    }
+  ]
+}

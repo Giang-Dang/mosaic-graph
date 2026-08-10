@@ -89,6 +89,25 @@ public sealed class CatalogService(CatalogDbContext db, ServiceCallCounter count
     /// identifier is appended whether or not the caller sorted. <c>IfEmpty</c>
     /// supplies the title ordering only when the caller did not ask for one.
     /// </para>
+    /// <para>
+    /// <c>Include(p =&gt; p.Id)</c> is chapter 13's fix and it is one line
+    /// standing in for a bug that shipped in chapter 4 and survived eight
+    /// chapters. Ordering by the identifier puts it in the <c>ORDER BY</c>; it
+    /// does not put it in the <c>SELECT</c>. The selector is built from the
+    /// client's selection set and from nothing else, so a client asking only
+    /// for <c>title</c> got products whose <c>Id</c> was
+    /// <c>Guid.Empty</c> - and the cursor is serialised from the materialised
+    /// entity, so every cursor on that page carried the same all-zero
+    /// tiebreaker. Paging on one of them re-read the row it should have skipped
+    /// and the client saw a product twice.
+    /// </para>
+    /// <para>
+    /// Federation is what made it hard to see rather than what caused it.
+    /// Through the router any query that also asks for a price, a stock level
+    /// or a review makes the planner add <c>id</c> to this fetch so it can
+    /// build representations, and the bug disappears. The only query that
+    /// reproduces it is one that stays inside Catalog.
+    /// </para>
     /// </remarks>
     public async Task<Page<Product>> BrowseProductsAsync(
         PagingArguments pagingArguments,
@@ -99,7 +118,7 @@ public sealed class CatalogService(CatalogDbContext db, ServiceCallCounter count
 
         return await db.Products
             .AsNoTracking()
-            .With(query, DefaultOrder)
+            .With((query ?? QueryContext<Product>.Empty).Include(p => p.Id), DefaultOrder)
             .ToPageAsync(pagingArguments, cancellationToken);
     }
 

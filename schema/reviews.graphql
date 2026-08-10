@@ -76,7 +76,7 @@ type RatingOutOfRangeError implements Error {
   max: Int!
 }
 
-type Review implements Node {
+type Review implements Node @key(fields: "id") {
   id: ID!
   author: Customer
   rating: Int!
@@ -126,7 +126,7 @@ interface Node {
 union SubmitReviewError = RatingOutOfRangeError | DuplicateReviewError
 
 "Union of all types that key directive applied. This information is needed by the Apollo federation gateway."
-union _Entity = Product
+union _Entity = Product | Review
 
 input SubmitReviewInput {
   productId: ID!

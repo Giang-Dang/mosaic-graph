@@ -1,0 +1,28 @@
+# The composer's input for chapter 13's sample: one subgraph that owns an
+# entity interface and its two implementations, and one that adds a field to
+# the interface without knowing either of them.
+#
+#   npx wgc router compose -i samples/interface-object/graph.yaml \
+#                          -o samples/interface-object/supergraph.json
+#
+# Composed from the committed schema files rather than by introspection, for
+# the reason chapters 7 and 11 give for their samples: the file is what a
+# composer would be handed in a pipeline, and drift between it and the running
+# service is something the gate should catch rather than paper over.
+#
+# The routing URLs say host.docker.internal because the router runs in a
+# container and both subgraphs run on the host. Change them to localhost if you
+# run the router as a binary instead.
+
+version: 1
+
+subgraphs:
+  - name: library
+    routing_url: http://host.docker.internal:5207/graphql
+    schema:
+      file: ../../schema/samples/interface-object-library.graphql
+
+  - name: ratings
+    routing_url: http://host.docker.internal:5208/graphql
+    schema:
+      file: ../../schema/samples/interface-object-ratings.graphql

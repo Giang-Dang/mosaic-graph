@@ -484,8 +484,19 @@
               "// The difference between participating in an entity and merely",
               "// referencing one. Without the flag this service would be promising",
               "// the router something it cannot do.",
-              "pm.test('and so there is no _Entity union member for either', () =>",
-              "  pm.expect(sdl).to.not.match(/union _Entity =/));"
+              "//",
+              "// Until chapter 13 this asserted that there is no _Entity union here at",
+              "// all, because a resolvable: false key does not create one and Ordering",
+              "// had nothing else to put in it. Order became an entity in that chapter",
+              "// so that a federated node field could find one, so the union exists.",
+              "// The claim has not changed: it holds Order, and neither of the two",
+              "// types this service only ever references.",
+              "pm.test('the _Entity union holds Order', () =>",
+              "  pm.expect(sdl).to.match(/union _Entity = Order\\s*$/m));",
+              "pm.test('and neither referenced type is in it', () => {",
+              "  pm.expect(sdl).to.not.include('union _Entity = Order | Product');",
+              "  pm.expect(sdl).to.not.include('union _Entity = Order | Customer');",
+              "});"
             ]
           }
         }

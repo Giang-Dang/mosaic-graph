@@ -28,6 +28,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | `ch10` | 10. Enter the Router | Neither service changes by a line again. The Cosmo Router joins `docker-compose.yml` with a `router/config.yaml` of its own, and the storefront query answers for the first time since chapter 8 |
 | `ch11` | 11. Entity Resolution Done Right | `Product.shippingCost`, the first field in Mosaic that needs something Catalog owns, declared `@requires(fields: "category")`. Plus `samples/entity-resolution`, where a reference resolver writes down every call the router makes to it and `@provides` is caught both saving a round trip and telling a lie |
 | `ch12` | 12. Strangling the Monolith | Six services. `Mosaic.Api` is gone and its five domains are `Mosaic.Pricing`, `Mosaic.Inventory`, `Mosaic.Accounts`, `Mosaic.Reviews` and `Mosaic.Ordering`, on 5102 to 5106, one database each. `Mosaic.ServiceDefaults` is the first project here that is not a service. `scripts/override-cases.mjs` produces nine `@override` behaviours on purpose, including the book's first composition warning |
+| `ch13` | 13. Hard Modeling Problems | Seven services. `Mosaic.Nodes` on 5107 owns `Query.node` and `Query.nodes` for the whole graph and has no database at all; `Review` and `Order` become entities so that the router can find one from an identifier. Catalog's paging cursor gets its tiebreaker back, which is a defect chapter 4 shipped and no schema could show. Plus `samples/interface-object` and `scripts/modeling-cases.mjs`, fourteen cases about enums, value types, scalars and `node` |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -44,12 +45,13 @@ intermediate one.
 
 ## Running it
 
-Six services is more than a terminal each, so start them from the compose file.
-The first run builds six images and is slow:
+Seven services is more than a terminal each, so start them from the compose
+file. The first run builds seven images and is slow:
 
 ```
 docker compose up -d --build mosaic-db mosaic-catalog mosaic-pricing \
-    mosaic-inventory mosaic-accounts mosaic-reviews mosaic-ordering mosaic-router
+    mosaic-inventory mosaic-accounts mosaic-reviews mosaic-ordering \
+    mosaic-nodes mosaic-router
 docker compose ps
 ```
 
@@ -61,6 +63,7 @@ docker compose ps
 | `mosaic-accounts` | 5104 | `accounts` | `Customer` |
 | `mosaic-reviews` | 5105 | `reviews` | `Review`, `Product.reviews`, `Product.averageRating`, and the one mutation |
 | `mosaic-ordering` | 5106 | `ordering` | `Order`, `OrderLine` |
+| `mosaic-nodes` | 5107 | | `Query.node`, `Query.nodes` |
 | `mosaic-router` | 3002 | | the graph |
 
 Any one of them also runs from the SDK, which is what you want while changing
@@ -87,7 +90,7 @@ No container was added for any of them. `EnsureCreatedAsync` creates the
 database as well as the schema, so all six appeared on the server that was
 already running, separate from each other.
 
-Three of the six have no root field at all. Pricing, Inventory and Reviews
+Three of the seven have no root field at all. Pricing, Inventory and Reviews
 contribute fields to entities somebody else owns, so the only way into them is
 an `_entities` call. Open one in Nitro and `Query` has two fields on it, both
 beginning with an underscore.

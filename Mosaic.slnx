@@ -7,6 +7,7 @@
     <Project Path="src/Mosaic.Accounts/Mosaic.Accounts.csproj" />
     <Project Path="src/Mosaic.Reviews/Mosaic.Reviews.csproj" />
     <Project Path="src/Mosaic.Ordering/Mosaic.Ordering.csproj" />
+    <Project Path="src/Mosaic.Nodes/Mosaic.Nodes.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/three-approaches/Mosaic.Sample.ImplementationFirst/Mosaic.Sample.ImplementationFirst.csproj" />
@@ -18,5 +19,7 @@
     <Project Path="samples/entity-attribute-placement/Mosaic.Sample.EntityAttributePlacement.csproj" />
     <Project Path="samples/entity-resolution/Mosaic.Sample.Entities.Catalog/Mosaic.Sample.Entities.Catalog.csproj" />
     <Project Path="samples/entity-resolution/Mosaic.Sample.Entities.Crates/Mosaic.Sample.Entities.Crates.csproj" />
+    <Project Path="samples/interface-object/Mosaic.Sample.InterfaceObject.Library/Mosaic.Sample.InterfaceObject.Library.csproj" />
+    <Project Path="samples/interface-object/Mosaic.Sample.InterfaceObject.Ratings/Mosaic.Sample.InterfaceObject.Ratings.csproj" />
   </Folder>
 </Solution>

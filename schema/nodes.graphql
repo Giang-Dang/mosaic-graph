@@ -1,41 +1,32 @@
 schema
   @link(
     url: "https://specs.apollo.dev/federation/v2.6"
-    import: ["@key", "@shareable", "@tag", "FieldSet"]
+    import: ["@key", "@tag", "FieldSet"]
   ) {
   query: Query
 }
 
 type Query {
-  ordersByCustomer(customerId: ID!): [Order!]!
+  "Fetches an object given its ID."
+  node("ID of the object." id: ID!): Node
+  "Lookup nodes by a list of IDs."
+  nodes("The list of node IDs." ids: [ID!]!): [Node]!
   _service: _Service!
-  _entities(representations: [_Any!]!): [_Entity]!
 }
 
-type Customer @key(fields: "id", resolvable: false) {
+type Customer implements Node @key(fields: "id", resolvable: false) {
   id: ID!
 }
 
-type Money @shareable {
-  amount: Decimal!
-  currency: String!
-}
-
-type Order implements Node @key(fields: "id") {
+type Order implements Node @key(fields: "id", resolvable: false) {
   id: ID!
-  customer: Customer
-  total: Money!
-  placedAt: DateTime!
-  lines: [OrderLine!]!
 }
 
-type OrderLine {
-  product: Product
-  quantity: Int!
-  unitPrice: Money!
+type Product implements Node @key(fields: "id", resolvable: false) {
+  id: ID!
 }
 
-type Product @key(fields: "id", resolvable: false) {
+type Review implements Node @key(fields: "id", resolvable: false) {
   id: ID!
 }
 
@@ -48,17 +39,6 @@ type _Service {
 interface Node {
   id: ID!
 }
-
-"Union of all types that key directive applied. This information is needed by the Apollo federation gateway."
-union _Entity = Order
-
-"The `DateTime` scalar type represents a date and time with time zone offset information."
-scalar DateTime
-  @specifiedBy(url: "https://scalars.graphql.org/chillicream/date-time.html")
-
-"The `Decimal` scalar type represents a decimal floating-point number with high precision."
-scalar Decimal
-  @specifiedBy(url: "https://scalars.graphql.org/chillicream/decimal.html")
 
 "Scalar representing a set of fields."
 scalar FieldSet
@@ -78,6 +58,3 @@ directive @link(
   "Gets optional list of imported element names."
   import: [String!]
 ) repeatable on SCHEMA
-
-"Indicates that given object and/or field can be resolved by multiple subgraphs."
-directive @shareable repeatable on OBJECT | FIELD_DEFINITION

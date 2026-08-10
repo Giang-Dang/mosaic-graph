@@ -335,14 +335,22 @@
 					"script": {
 						"type": "text/javascript",
 						"exec": [
-							"const errors = pm.response.json().errors || [];",
+							"const body = pm.response.json();",
 							"",
-							"// Both subgraphs pass registerNodeInterface: false, because two",
-							"// subgraphs declaring Query.node is a composition error and",
-							"// @shareable would be a lie. The interface survived and the root",
-							"// field did not, which is only visible from out here.",
-							"pm.test(\"node is gone from the graph\", function () {",
-							"    pm.expect(errors[0].message).to.include('Cannot query field \"node\" on type \"Query\"');",
+							"// This asserted the opposite until chapter 13, and the change is the",
+							"// point rather than a repair. Every subgraph passes",
+							"// registerNodeInterface: false, because two subgraphs declaring",
+							"// Query.node is a composition error and marking it @shareable composes",
+							"// and is worse. So from chapter 8 to chapter 12 the Node interface",
+							"// survived in the schema and the root field did not, which was only",
+							"// visible from out here.",
+							"//",
+							"// Chapter 13 gave it back, in a seventh subgraph that owns the two root",
+							"// fields for the whole graph and nothing else. Run this against tag ch12",
+							"// and the request answers an error; against ch13 it answers a product.",
+							"pm.test(\"node answers again since chapter 13\", function () {",
+							"    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+							"    pm.expect(body.data.node.id).to.be.a(\"string\").and.not.empty;",
 							"});"
 						]
 					}

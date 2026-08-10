@@ -57,7 +57,7 @@
 
 [CmdletBinding()]
 param(
-    # The first of Mosaic's six subgraph ports. They are consecutive from here,
+    # The first of Mosaic's seven subgraph ports. They are consecutive from here,
     # in the order federation/mosaic.yaml lists them - catalog, pricing,
     # inventory, accounts, reviews, ordering - and they match docker-compose.yml
     # and the six http launch profiles.
@@ -115,18 +115,23 @@ $SampleSchemaDir    = Join-Path $RepoRoot 'schema' 'samples'
 $PostmanCollection  = Join-Path $RepoRoot 'postman' 'mosaic-subgraphs.postman_collection.json'
 $PostmanEnvironment = Join-Path $RepoRoot 'postman' 'mosaic-subgraphs.local.postman_environment.json'
 
-# -- the six subgraphs -------------------------------------------------------
+# -- the seven subgraphs -----------------------------------------------------
 
 # One entry per service, in the order federation/mosaic.yaml lists them and in
 # the order chapter 12 extracted them. Everything below that used to be written
 # twice - once for Mosaic.Api and once for Mosaic.Catalog - is written once and
-# iterated, because six copies of a startup block is five chances to check one
+# iterated, because seven copies of a startup block is six chances to check one
 # service less thoroughly than the others.
 #
+# Nodes is the seventh and joined at chapter 13. It has no database, so it is
+# the one entry here for which the reset-and-reseed further down does nothing,
+# and it needs no special case anywhere else: it builds, exports a schema,
+# answers /health and composes exactly like the other six.
+#
 # Ports are assigned from $FirstSubgraphPort rather than typed, so that a
-# machine with something already on 5101 can move all six with one switch.
+# machine with something already on 5101 can move all seven with one switch.
 $Subgraphs = [ordered] @{}
-$subgraphNames = @('Catalog', 'Pricing', 'Inventory', 'Accounts', 'Reviews', 'Ordering')
+$subgraphNames = @('Catalog', 'Pricing', 'Inventory', 'Accounts', 'Reviews', 'Ordering', 'Nodes')
 for ($i = 0; $i -lt $subgraphNames.Count; $i++) {
     $name = $subgraphNames[$i]
     $port = $FirstSubgraphPort + $i
@@ -191,6 +196,26 @@ $EntityCases        = Join-Path $RepoRoot 'scripts' 'entity-cases.mjs'
 # scripts - and the same edit discipline.
 $OverrideCases = Join-Path $RepoRoot 'scripts' 'override-cases.mjs'
 
+# -- chapter 13's modelling problems -----------------------------------------
+
+# Fourteen cases across four families: what the composer does with an enum
+# declared twice, with a value type declared twice, with a scalar that two
+# subgraphs mean different things by, and with Query.node in more than one
+# place. Most of them compose, which is why an exit code is not enough and the
+# script reads the composed client schema and the routing table instead.
+#
+# The @interfaceObject cases run against samples/interface-object rather than
+# against Mosaic, because Mosaic has no interface whose implementations live in
+# two services and inventing one inside a storefront would be worse than a
+# sample. Those two subgraph schemas are checked for drift below like any
+# other; the sample's own router is not started, because what chapter 13 reads
+# out of it beyond composition is a query plan, and decision 62 keeps that out
+# of a gate.
+$ModelingCases      = Join-Path $RepoRoot 'scripts' 'modeling-cases.mjs'
+$InterfaceObjectDir = Join-Path $RepoRoot 'samples' 'interface-object'
+$NodesPostman       = Join-Path $RepoRoot 'postman' 'mosaic-nodes.postman_collection.json'
+$NodesPostmanEnv    = Join-Path $RepoRoot 'postman' 'mosaic-nodes.local.postman_environment.json'
+
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
 # Product.shippingCost, read off each subgraph's own request timeline. They are
@@ -239,8 +264,10 @@ $ExpectedStorefrontWith = [ordered] @{
     reviews   = @{ Resolvers = 26; Sql = 1 }
 }
 
-# The two that answer nothing for this query, and should say nothing about it.
-$SilentForStorefront = @('accounts', 'ordering')
+# The three that answer nothing for this query, and should say nothing about
+# it. Nodes joined the list at chapter 13 by being the seventh subgraph and
+# having no part in a storefront query: the only way into it is Query.node.
+$SilentForStorefront = @('accounts', 'ordering', 'nodes')
 
 # -- chapter 7's federated-wire sample ---------------------------------------
 
@@ -819,7 +846,56 @@ try {
         Write-Ok 'the placement sample still leaks exactly the field chapter 8 prints'
     }
 
-    # -- 5. start the six subgraphs ----------------------------------------
+    # -- 4c. the interface-object sample ------------------------------------
+
+    # Chapter 13's two sample subgraphs. Neither is ever started here: what the
+    # gate needs from them is that their committed SDL is what the projects
+    # export, because scripts/modeling-cases.mjs composes those files and
+    # asserts what the composer says about them. A drift would make three of
+    # that script's cases assert something about a schema nobody publishes.
+    if (-not (Test-Path -LiteralPath $InterfaceObjectDir)) {
+        Write-Skipped 'interface-object sample' 'samples/interface-object does not exist yet'
+    } else {
+        $interfaceProjects = @{
+            'interface-object-library' = Join-Path $InterfaceObjectDir 'Mosaic.Sample.InterfaceObject.Library'
+            'interface-object-ratings' = Join-Path $InterfaceObjectDir 'Mosaic.Sample.InterfaceObject.Ratings'
+        }
+
+        foreach ($sample in $interfaceProjects.Keys) {
+            $committed = Join-Path $SampleSchemaDir "$sample.graphql"
+            $exported = Join-Path $tempDir "$sample.graphql"
+            & dotnet run --project $interfaceProjects[$sample] -c Release --no-build --no-launch-profile -- schema export --output $exported
+            if ($LASTEXITCODE -ne 0) {
+                Stop-Verify "interface-object sample ($sample)" 'Exporting the schema failed; its output above says why.'
+            }
+            if (-not (Test-Path -LiteralPath $committed)) {
+                Stop-Verify "interface-object sample ($sample)" "There is no committed snapshot at $committed."
+            }
+            if (-not (Test-SameText $committed $exported)) {
+                Stop-Verify "interface-object sample ($sample)" (Join-Lines @(
+                    "schema/samples/$sample.graphql is not what the project exports."
+                    ''
+                    (Get-SchemaDiff -ExpectedPath $committed -ActualPath $exported `
+                        -WorkDir $tempDir -Label $sample)))
+            }
+        }
+
+        # The directive by name, for the same reason the placement check names
+        # a field: the claim is that HotChocolate emits @interfaceObject on the
+        # contributing type and @key on the owning interface, and a release
+        # that stopped doing either would leave both files looking plausible.
+        $ratingsSdl = Get-NormalisedText (Join-Path $SampleSchemaDir 'interface-object-ratings.graphql')
+        if ($ratingsSdl -notmatch 'type Media @key\(fields: "id"\) @interfaceObject') {
+            Stop-Verify 'interface-object sample' 'The ratings subgraph no longer declares Media as @key + @interfaceObject, which is the whole sample.'
+        }
+        $librarySdl = Get-NormalisedText (Join-Path $SampleSchemaDir 'interface-object-library.graphql')
+        if ($librarySdl -notmatch 'interface Media @key\(fields: "id"\)') {
+            Stop-Verify 'interface-object sample' 'The library subgraph no longer keys the Media interface, and an @interfaceObject needs an entity interface to attach to.'
+        }
+        Write-Ok 'the interface-object sample still declares the two directives chapter 13 prints'
+    }
+
+    # -- 5. start the seven subgraphs --------------------------------------
 
     foreach ($name in $Subgraphs.Keys) {
         if (Test-PortInUse $Subgraphs[$name].Port) {
@@ -843,11 +919,11 @@ try {
     # and buys a gate whose result does not depend on how many times it has been
     # run before, which is the only kind worth having.
     #
-    # One variable resets all six, which is the whole reason every seeder spells
+    # One variable resets all six of the services that have a database, which is the whole reason every seeder spells
     # it the same way.
     $env:MOSAIC_RESET_DATABASE = '1'
 
-    # One at a time rather than all six at once, because each of them creates and
+    # One at a time rather than all seven at once, because each of them creates and
     # seeds a database on the way up and doing that in sequence makes a failure
     # readable. It also costs the slowest part of a run: six .NET services
     # starting one after another.
@@ -1223,7 +1299,7 @@ try {
         Stop-Verify 'lookup count' (Join-Lines @(
             'Reviews never logged a lookup count for the query.'
             'Either the counting middleware is gone or the log level hides it.'
-            'UseMosaicServiceDefaults() is what installs it, in every one of the six.'
+            'UseMosaicServiceDefaults() is what installs it, in every one of the seven.'
             ''
             (Get-LogTail $reviewsStdout)))
     }
@@ -1257,8 +1333,8 @@ try {
     # The pipeline is logged once, while the schema is being built, so by the
     # time a query has been answered these lines are already there.
     #
-    # Checked on every one of the six since chapter 12. The list is chapter 3's
-    # and none of the six should differ from it: they all call the same
+    # Checked on every one of the seven since chapter 13. The list is chapter
+    # 3's and none of them should differ from it: they all call the same
     # AddMosaicSubgraph, and a service that assembled a different pipeline would
     # be a service whose registrations had drifted from the platform's.
     foreach ($name in $Subgraphs.Keys) {
@@ -1357,8 +1433,8 @@ try {
     if ($loggedSql.Count -eq 0) {
         Stop-Verify 'sql command count' (Join-Lines @(
             'The timeline never reported a SQL command count.'
-            'SqlCommandCounter is the EF Core interceptor that produces it, and every'
-            'one of the six attaches it to its pooled context factory.'
+            'SqlCommandCounter is the EF Core interceptor that produces it, and each of'
+            'the six services with a database attaches it to its pooled context factory.'
             ''
             (Get-LogTail $reviewsStdout)))
     }
@@ -1545,6 +1621,33 @@ try {
             Write-Ok 'the nine @override behaviours chapter 12 prints are the ones wgc produces'
         }
 
+        # -- 8b3. the modelling problems, which is chapter 13's subject -------
+
+        # Fourteen cases, and none of them needs a service running either. The
+        # difference from the two scripts above is what is asserted: most of
+        # these compose, so the assertion is on the composed client schema and
+        # on the routing table rather than on an error. An enum that quietly
+        # loses a member and a value type that quietly becomes nullable are
+        # both successful compositions.
+        if (-not (Test-Path -LiteralPath $ModelingCases)) {
+            Write-Skipped 'modelling cases' 'scripts/modeling-cases.mjs does not exist yet'
+        } elseif (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+            Stop-Verify 'modelling cases' 'node is not on PATH; it is needed to run scripts/modeling-cases.mjs.'
+        } else {
+            & node $ModelingCases
+            if ($LASTEXITCODE -ne 0) {
+                Stop-Verify 'modelling cases' (Join-Lines @(
+                    "scripts/modeling-cases.mjs exited with $LASTEXITCODE."
+                    'One of the behaviours chapter 13 describes has changed. The output above'
+                    'says which case and how. Two of them are worth reading carefully before'
+                    'assuming the case is at fault: the enum merge rules and the composer'
+                    'crash on an entity interface whose implementation has no key. If wgc'
+                    'turned that crash into an error message, that is a paragraph to rewrite'
+                    'rather than an assertion to loosen.'))
+            }
+            Write-Ok 'the fourteen modelling behaviours chapter 13 prints are the ones wgc produces'
+        }
+
         # -- 8c. chapter 10: a router in front of the two ---------------------
 
         # The first section that asks the graph a question rather than asking a
@@ -1666,6 +1769,34 @@ try {
                 Write-Ok 'a field that needs the other service is answered, and its plan says so'
             }
 
+            # -- chapter 13 -------------------------------------------------
+
+            # One identifier and four owners, plus the cursor fix. Every
+            # request goes to the router, because every one of them is about
+            # something no single service can do: the node service holds four
+            # two-line stubs and no data, so an answer coming back at all is
+            # the router having followed a stub to whoever owns the rest.
+            if (-not (Test-Path -LiteralPath $NodesPostman) -or -not (Test-Path -LiteralPath $NodesPostmanEnv)) {
+                Write-Skipped 'nodes postman' 'the nodes collection or its environment is missing from postman/'
+            } elseif (-not $newmanCommand) {
+                Write-Skipped 'nodes postman' 'newman is not installed - run npm install first'
+            } else {
+                & $newmanCommand @($newmanPrefix + @(
+                    'run', $NodesPostman,
+                    '--environment', $NodesPostmanEnv,
+                    '--env-var', "routerUrl=$MosaicRouterUrl",
+                    '--env-var', "nodesUrl=$($Subgraphs['nodes'].Url)",
+                    '--bail'))
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'nodes postman' (Join-Lines @(
+                        "newman exited with $LASTEXITCODE; its output above says which request failed."
+                        'The last two requests are the cursor fix and they fail against tag ch12'
+                        'on purpose. The four before them are the node field, and a null in any'
+                        'of them is the router not following a stub to its owner.'))
+                }
+                Write-Ok 'one identifier resolves through four owners, and a page does not repeat a row'
+            }
+
             # Eleven cases: three composition, one against Mosaic's _entities,
             # and seven on the sample under samples/entity-resolution, which
             # that script starts and stops itself. Same arrangement as chapters
@@ -1773,7 +1904,126 @@ try {
 
             $shippingDelta = $ExpectedStorefrontWith['pricing'].Resolvers - $ExpectedStorefrontWithout['pricing'].Resolvers
             Write-Ok ("the storefront costs $shippingDelta more resolvers in pricing with shippingCost, " +
-                "no more SQL anywhere, and nothing at all in accounts or ordering")
+                "no more SQL anywhere, and nothing at all in accounts, ordering or nodes")
+
+            # -- 8e. chapter 13: one identifier, four types ------------------
+
+            # The node field, through the router, for each of the four types
+            # the graph considers globally addressable. Every one of these
+            # crosses at least one boundary on purpose: the node service holds
+            # nothing but the key, so a field coming back at all is evidence
+            # that the router took the stub and went to the owner.
+            $nodeSeed = Invoke-Gql -Url $MosaicRouterUrl -Step 'node identifiers' -Query @'
+{
+  browseProducts(first: 1) { nodes { id reviews(first: 1) { nodes { id author { id } } } } }
+}
+'@
+            $seedProduct = $nodeSeed.data.browseProducts.nodes[0]
+            if (-not $seedProduct.reviews.nodes -or $seedProduct.reviews.nodes.Count -eq 0) {
+                Stop-Verify 'node identifiers' 'The first product has no reviews, so this step cannot obtain a Review or a Customer identifier.'
+            }
+            $nodeIds = @{
+                Product  = $seedProduct.id
+                Review   = $seedProduct.reviews.nodes[0].id
+                Customer = $seedProduct.reviews.nodes[0].author.id
+            }
+
+            # Seven of the twelve seeded customers have no orders, so walk the
+            # reviewers until one of them does. Chapter 8's open item says the
+            # same thing about the same seed data: this is a fair description
+            # of the schema rather than a workaround, and it is fragile.
+            $reviewers = Invoke-Gql -Url $MosaicRouterUrl -Step 'node identifiers' -Query @"
+{
+  productById(id: "$($nodeIds.Product)") { reviews(first: 20) { nodes { author { id } } } }
+}
+"@
+            foreach ($reviewer in $reviewers.data.productById.reviews.nodes) {
+                $orders = Invoke-Gql -Url $MosaicRouterUrl -Step 'node identifiers' -Query @"
+{ ordersByCustomer(customerId: "$($reviewer.author.id)") { id } }
+"@
+                if ($orders.data.ordersByCustomer.Count -gt 0) {
+                    $nodeIds.Order = $orders.data.ordersByCustomer[0].id
+                    break
+                }
+            }
+            if (-not $nodeIds.ContainsKey('Order')) {
+                Stop-Verify 'node identifiers' 'No reviewer of the first product has an order, so this step cannot obtain an Order identifier.'
+            }
+
+            # One field per type, and each one owned by a service other than
+            # nodes: title is catalog's, displayName is accounts', rating is
+            # reviews' and placedAt is ordering's.
+            $nodeExpectations = @(
+                @{ Type = 'Product';  Field = 'title' }
+                @{ Type = 'Customer'; Field = 'displayName' }
+                @{ Type = 'Review';   Field = 'rating' }
+                @{ Type = 'Order';    Field = 'placedAt' }
+            )
+            foreach ($expectation in $nodeExpectations) {
+                $payload = Invoke-Gql -Url $MosaicRouterUrl -Step "node($($expectation.Type))" -Query @"
+{
+  node(id: "$($nodeIds[$expectation.Type])") {
+    __typename
+    ... on $($expectation.Type) { $($expectation.Field) }
+  }
+}
+"@
+                if ($payload.data.node.__typename -ne $expectation.Type) {
+                    Stop-Verify "node($($expectation.Type))" (Join-Lines @(
+                        "node() answered __typename $($payload.data.node.__typename) for a $($expectation.Type) identifier."
+                        'The node service decodes the type name out of the identifier, so this is'
+                        'either a change to the identifier format or a stub type that went missing.'))
+                }
+                if ($null -eq $payload.data.node.$($expectation.Field)) {
+                    Stop-Verify "node($($expectation.Type))" (Join-Lines @(
+                        "node() answered null for $($expectation.Type).$($expectation.Field)."
+                        'That field belongs to a service other than nodes, so a null here means'
+                        'the router did not follow the stub to its owner. Chapter 13 is built on'
+                        'it doing exactly that.'))
+                }
+            }
+            Write-Ok 'node() answers for all four addressable types, with fields from four other services'
+
+            # -- 8f. chapter 13: the cursor carries its tiebreaker -----------
+
+            # The bug chapter 4 shipped and chapter 13 found. browseProducts is
+            # projected from the selection set, and the keyset cursor is built
+            # from the materialised entity, so a client asking for nothing but
+            # title used to get cursors whose tiebreaker was an empty Guid and
+            # a second page that repeated a row.
+            #
+            # Asked without id on purpose, and through the router on purpose.
+            # Adding any field from another subgraph makes the planner ask
+            # catalog for id anyway and hides the whole thing, which is why
+            # eight chapters of federated queries never tripped over it.
+            $firstPage = Invoke-Gql -Url $MosaicRouterUrl -Step 'cursor tiebreaker' -Query @'
+{ browseProducts(first: 2) { edges { cursor node { title } } } }
+'@
+            $edges = $firstPage.data.browseProducts.edges
+            $lastCursor = $edges[$edges.Count - 1].cursor
+            $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($lastCursor))
+            if ($decoded -match '00000000-0000-0000-0000-000000000000') {
+                Stop-Verify 'cursor tiebreaker' (Join-Lines @(
+                    "The cursor for a page selecting only title decodes to $decoded."
+                    'The all-zero Guid means the projection dropped the key the cursor sorts'
+                    'on. QueryContext.Include(p => p.Id) in CatalogService is what puts it'
+                    'back, and Product needs a parameterless constructor for that to work.'))
+            }
+
+            $secondPage = Invoke-Gql -Url $MosaicRouterUrl -Step 'cursor tiebreaker' -Query @"
+{ browseProducts(first: 2, after: "$lastCursor") { edges { node { title } } } }
+"@
+            $firstTitles = @($edges | ForEach-Object { $_.node.title })
+            $secondTitles = @($secondPage.data.browseProducts.edges | ForEach-Object { $_.node.title })
+            $repeated = @($secondTitles | Where-Object { $firstTitles -contains $_ })
+            if ($repeated.Count -gt 0) {
+                Stop-Verify 'cursor tiebreaker' (Join-Lines @(
+                    "Page two of browseProducts repeats $($repeated -join ', '), which page one already returned."
+                    'A keyset cursor that cannot tell two rows apart re-reads the row it should'
+                    'have skipped. This is the defect chapter 13 fixes, and it is invisible in'
+                    'the published schema, so nothing else in this gate would catch it.'))
+            }
+            Write-Ok 'a page selecting only title carries real cursors and does not repeat a row'
 
             # Down rather than stop, and now rather than in the finally block,
             # because the federated-wire section below wants this port.

@@ -28,6 +28,11 @@ samples/federated-wire/supergraph.json
 # composes a copy of its own anyway, routed at ports no launch profile uses.
 samples/entity-resolution/supergraph.json
 
+# Chapter 13's sample, same reason again. What that chapter prints out of this
+# graph is the composed client schema and a query plan, both read back through
+# the router rather than out of the file.
+samples/interface-object/supergraph.json
+
 # Chapter 9's lab composes here, so that a reader trying things out never has
 # git status telling them they have changed the committed config.
 federation/scratch.json

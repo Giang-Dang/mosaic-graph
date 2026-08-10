@@ -65,10 +65,17 @@ public static class MosaicSubgraphDefaults
     /// <c>registerNodeInterface: false</c> keeps the node id serialiser, the
     /// <c>Node</c> interface and every node resolver, and drops
     /// <c>Query.node</c> and <c>Query.nodes</c>. Two subgraphs declaring those
-    /// is a composition error and <c>@shareable</c> would be a lie: no service
-    /// can resolve another's node types. At six subgraphs that is five ways to
-    /// break the graph rather than one. Chapter 13 is where a federated node
-    /// field comes back.
+    /// is a composition error, and declaring them <c>@shareable</c> composes
+    /// and is worse: chapter 13 measured a graph where two subgraphs both
+    /// advertise <c>node</c>, and the router picks one and answers null for
+    /// every identifier belonging to the other.
+    /// </para>
+    /// <para>
+    /// Which is why the default is <c>false</c> and exactly one service passes
+    /// <c>true</c>. <c>Mosaic.Nodes</c> owns the two root fields on behalf of
+    /// the whole graph and is the only subgraph allowed to. The parameter
+    /// exists so that the exception is declared in one place and reads as a
+    /// decision rather than as a service that forgot to call the shared method.
     /// </para>
     /// <para>
     /// The two cost options are version skew between HotChocolate and the Cosmo
@@ -86,10 +93,17 @@ public static class MosaicSubgraphDefaults
     /// 'RequestTimelineListener'".
     /// </para>
     /// </remarks>
-    public static IRequestExecutorBuilder AddMosaicSubgraph(this IRequestExecutorBuilder builder)
+    /// <param name="builder">The GraphQL builder to configure.</param>
+    /// <param name="registerNodeInterface">
+    /// Whether this subgraph publishes <c>Query.node</c> and
+    /// <c>Query.nodes</c>. False everywhere but <c>Mosaic.Nodes</c>.
+    /// </param>
+    public static IRequestExecutorBuilder AddMosaicSubgraph(
+        this IRequestExecutorBuilder builder,
+        bool registerNodeInterface = false)
         => builder
             .AddApolloFederation()
-            .AddGlobalObjectIdentification(registerNodeInterface: false)
+            .AddGlobalObjectIdentification(registerNodeInterface)
             .ModifyCostOptions(options =>
             {
                 options.ApplyCostDefaults = false;

@@ -1,42 +1,22 @@
 schema
   @link(
     url: "https://specs.apollo.dev/federation/v2.6"
-    import: ["@key", "@shareable", "@tag", "FieldSet"]
+    import: ["@interfaceObject", "@key", "@tag", "FieldSet"]
   ) {
   query: Query
 }
 
 type Query {
-  ordersByCustomer(customerId: ID!): [Order!]!
+  resolutionLog: [String!]!
+  clearResolutionLog: Boolean!
   _service: _Service!
   _entities(representations: [_Any!]!): [_Entity]!
 }
 
-type Customer @key(fields: "id", resolvable: false) {
+type Media @key(fields: "id") @interfaceObject {
   id: ID!
-}
-
-type Money @shareable {
-  amount: Decimal!
-  currency: String!
-}
-
-type Order implements Node @key(fields: "id") {
-  id: ID!
-  customer: Customer
-  total: Money!
-  placedAt: DateTime!
-  lines: [OrderLine!]!
-}
-
-type OrderLine {
-  product: Product
-  quantity: Int!
-  unitPrice: Money!
-}
-
-type Product @key(fields: "id", resolvable: false) {
-  id: ID!
+  averageRating: Float
+  ratingCount: Int!
 }
 
 "This type provides a field named sdl: String! which exposes the SDL of the service's schema. This SDL (schema definition language) is a printed version of the service's schema including the annotations of federation directives. This SDL does not include the additions of the federation spec."
@@ -44,27 +24,17 @@ type _Service {
   sdl: String!
 }
 
-"The node interface is implemented by entities that have a global unique identifier."
-interface Node {
-  id: ID!
-}
-
 "Union of all types that key directive applied. This information is needed by the Apollo federation gateway."
-union _Entity = Order
-
-"The `DateTime` scalar type represents a date and time with time zone offset information."
-scalar DateTime
-  @specifiedBy(url: "https://scalars.graphql.org/chillicream/date-time.html")
-
-"The `Decimal` scalar type represents a decimal floating-point number with high precision."
-scalar Decimal
-  @specifiedBy(url: "https://scalars.graphql.org/chillicream/decimal.html")
+union _Entity = Media
 
 "Scalar representing a set of fields."
 scalar FieldSet
 
 "The _Any scalar is used to pass representations of entities from external services into the root _entities field for execution. Validation of the _Any scalar is done by matching the __typename and @external fields defined in the schema."
 scalar _Any
+
+"Provides meta information to the router that this entity type is an interface in the supergraph."
+directive @interfaceObject on OBJECT
 
 "Used to indicate a combination of fields that can be used to uniquely identify and fetch an object or interface."
 directive @key(fields: FieldSet!, resolvable: Boolean = true) repeatable on
@@ -78,6 +48,3 @@ directive @link(
   "Gets optional list of imported element names."
   import: [String!]
 ) repeatable on SCHEMA
-
-"Indicates that given object and/or field can be resolved by multiple subgraphs."
-directive @shareable repeatable on OBJECT | FIELD_DEFINITION

@@ -219,6 +219,29 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # The seventh subgraph, added in chapter 13, and the only entry in this file
+  # with neither a depends_on nor a connection string. It owns Query.node and
+  # Query.nodes on behalf of the whole graph, and answering them is decoding an
+  # identifier and handing the key back in a wrapper, which needs no storage.
+  mosaic-nodes:
+    build:
+      context: .
+      dockerfile: src/Mosaic.Nodes/Dockerfile
+    image: mosaic-nodes:dev
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+    ports:
+      - "5107:8080"
+    networks:
+      - mosaic
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
   mosaic-router:
     # Chapter 10. The Cosmo Router, in front of the six subgraphs above,
     # serving the whole graph on 3002. It is the only part of Mosaic that is
@@ -333,6 +356,35 @@ services:
       - ./samples/entity-resolution/supergraph.json:/etc/entities/supergraph.json:ro
     ports:
       - "3003:3003"
+    extra_hosts:
+      # Both subgraphs run on the host under `dotnet run`, not in a container.
+      - "host.docker.internal:host-gateway"
+
+  interfaces-router:
+    # Chapter 13's sample: the Cosmo Router in front of the two subgraphs under
+    # samples/interface-object. Third sample router, third profile, third port,
+    # for the same reason as the other two: nothing that starts Mosaic starts
+    # this, and the three are never meant to be up together.
+    #
+    # Compose the execution config before bringing this up, or the bind mount
+    # below creates a directory where the file should be:
+    #
+    #   npx wgc router compose -i samples/interface-object/graph.yaml \
+    #                          -o samples/interface-object/supergraph.json
+    profiles: ["interfaces"]
+    image: ghcr.io/wundergraph/cosmo/router:0.337.1
+    environment:
+      EXECUTION_CONFIG_FILE_PATH: "/etc/interfaces/supergraph.json"
+
+      # Development mode, for the query plan headers. The plan is where the
+      # representations the router builds for an @interfaceObject fetch are
+      # visible, so this is not optional here either.
+      DEV_MODE: "true"
+      LISTEN_ADDR: "0.0.0.0:3004"
+    volumes:
+      - ./samples/interface-object/supergraph.json:/etc/interfaces/supergraph.json:ro
+    ports:
+      - "3004:3004"
     extra_hosts:
       # Both subgraphs run on the host under `dotnet run`, not in a container.
       - "host.docker.internal:host-gateway"

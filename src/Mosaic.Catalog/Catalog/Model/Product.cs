@@ -38,6 +38,26 @@ public sealed record Product(
     ProductCategory Category)
 {
     /// <summary>
+    /// A parameterless constructor, which exists for one caller and is not the
+    /// one a reader would guess.
+    /// </summary>
+    /// <remarks>
+    /// <c>QueryContext&lt;T&gt;.Include</c> builds its selector as
+    /// <c>Expression.MemberInit(Expression.New(typeof(T)), ...)</c>, and
+    /// <c>Expression.New(Type)</c> wants a parameterless constructor. A
+    /// positional record has none, so <c>Include</c> throws for one and the
+    /// only symptom is <c>Unexpected Execution Error</c> on the field that
+    /// called it. This constructor is what lets
+    /// <c>CatalogService.BrowseProductsAsync</c> put the cursor's tiebreaker
+    /// back into the projection; the long comment there says what goes wrong
+    /// without it.
+    /// </remarks>
+    public Product()
+        : this(Guid.Empty, string.Empty, string.Empty, null, default)
+    {
+    }
+
+    /// <summary>
     /// Answers one representation: given the key another subgraph holds, hand
     /// back the product it names.
     /// </summary>
