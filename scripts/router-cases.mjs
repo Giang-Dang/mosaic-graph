@@ -305,7 +305,13 @@ async function withContext(fn) {
     composeUnsatisfiable() {
       const from = 'type Product @key(fields: "id") {';
       const to = 'type Product @key(fields: "id", resolvable: false) {';
-      const pricing = readFileSync(join(repoRoot, 'schema', 'pricing.graphql'), 'utf8');
+      // Normalised on the way in, for the reason spelled out at length in
+      // modeling-cases.mjs: the edits here are written with \n, and
+      // `dotnet run -- schema export` writes CRLF on Windows, so a re-export on
+      // this platform would make a case fail on line endings rather than on
+      // content - and .gitattributes would hide it again at the next commit.
+      const pricing = readFileSync(join(repoRoot, 'schema', 'pricing.graphql'), 'utf8')
+        .replace(/\r\n/g, '\n');
       const hits = pricing.split(from).length - 1;
       if (hits !== 1) {
         throw new Error(
@@ -315,7 +321,8 @@ async function withContext(fn) {
         );
       }
       for (const subgraph of SUBGRAPHS) {
-        const source = readFileSync(join(repoRoot, 'schema', `${subgraph.name}.graphql`), 'utf8');
+        const source = readFileSync(join(repoRoot, 'schema', `${subgraph.name}.graphql`), 'utf8')
+          .replace(/\r\n/g, '\n');
         writeFileSync(
           join(dir, `broken-${subgraph.name}.graphql`),
           subgraph.name === 'pricing' ? source.replace(from, to) : source,

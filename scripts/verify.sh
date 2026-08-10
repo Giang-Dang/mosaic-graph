@@ -988,12 +988,16 @@ for entry in $SUBGRAPHS; do
         step_fail "schema drift ($name)" "There is no committed snapshot at $committed."
     fi
 
+    # The printed command uses the absolute path for --output on purpose: it
+    # resolves against the *project* directory rather than the working
+    # directory, so a repo-root-relative path pasted at the repo root fails
+    # with a DirectoryNotFoundException.
     if ! same_text "$committed" "$exported"; then
         step_fail "schema drift ($name)" "The exported schema is not the one committed in ${committed#"$REPO_ROOT/"}.
 
 If the change is deliberate, regenerate the snapshot and commit it:
 
-    dotnet run --project ${project#"$REPO_ROOT/"} -- schema export --output ${committed#"$REPO_ROOT/"}
+    dotnet run --project ${project#"$REPO_ROOT/"} -- schema export --output \"$committed\"
 
 If it is not, a dependency changed the schema behind your back. That is what
 this check exists to catch. Since chapter 8 it also catches a change to one

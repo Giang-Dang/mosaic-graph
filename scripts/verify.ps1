@@ -702,12 +702,17 @@ try {
 
         if (-not (Test-SameText $subgraph.Committed $exportedSchema)) {
             $relative = $subgraph.Committed.Substring($RepoRoot.Length + 1).Replace('\', '/')
+            # The printed command uses the absolute path on purpose. `--output`
+            # resolves a relative path against the *project* directory rather
+            # than the working directory, so a repo-root-relative path pasted at
+            # the repo root fails with a DirectoryNotFoundException, which is a
+            # baffling thing to be told by a remediation hint.
             Stop-Verify "schema drift ($name)" (Join-Lines @(
                 "The exported schema is not the one committed in $relative."
                 ''
                 'If the change is deliberate, regenerate the snapshot and commit it:'
                 ''
-                "    dotnet run --project $($subgraph.Project) -- schema export --output $relative"
+                "    dotnet run --project $($subgraph.Project) -- schema export --output `"$($subgraph.Committed)`""
                 ''
                 'If it is not, a dependency changed the schema behind your back. That is'
                 'what this check exists to catch. Since chapter 8 it also catches a'

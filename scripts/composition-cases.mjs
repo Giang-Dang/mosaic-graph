@@ -227,10 +227,15 @@ function compose(testCase) {
     }
 
     for (const subgraph of SUBGRAPHS) {
+      // Normalised on the way in, for the reason spelled out at length in
+      // modeling-cases.mjs: every edit below is written with \n, and
+      // `dotnet run -- schema export` writes CRLF on Windows, so a re-export on
+      // this platform would make cases fail on line endings rather than on
+      // content - and .gitattributes would hide it again at the next commit.
       const source = readFileSync(
         join(repoRoot, 'schema', `${subgraph.name}.graphql`),
         'utf8',
-      );
+      ).replace(/\r\n/g, '\n');
       writeFileSync(
         join(dir, `${subgraph.name}.graphql`),
         applyEdits(
