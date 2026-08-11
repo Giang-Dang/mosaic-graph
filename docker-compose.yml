@@ -49,6 +49,37 @@ services:
       - mosaic
     restart: unless-stopped
 
+  mosaic-nats:
+    # Chapter 14. The second piece of infrastructure in this file, and the first
+    # one that no service in src/ reads from. Reviews publishes to it; the thing
+    # that subscribes is the router, on behalf of a subgraph that is a schema
+    # file. That is the whole shape of event-driven federated subscriptions and
+    # it is visible in this block: nothing here depends on Mosaic and Mosaic
+    # barely depends on it.
+    image: nats:2.12-alpine
+    # -m starts the monitoring endpoint on 8222, which is the only way to health
+    # check this image: it ships no shell and no client binary, so the usual
+    # CMD-SHELL trick has nothing to run.
+    command: ["-js", "-m", "8222"]
+    ports:
+      # Published so that a Reviews started with `dotnet run` on the host and a
+      # Reviews started by this file both reach the same broker, exactly as
+      # mosaic-db is published for the same reason.
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      # The image has no curl and no shell, so the check runs the server binary
+      # itself in its client role. `nats-server --help` would prove nothing;
+      # /healthz on the monitoring port is the server saying it is serving.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - mosaic
+    restart: unless-stopped
+
   mosaic-catalog:
     # Chapter 8's extraction, and the shape the other five copied. Deliberately
     # identical from here down to the healthcheck: six services that start,
@@ -181,9 +212,20 @@ services:
     depends_on:
       mosaic-db:
         condition: service_healthy
+      # Chapter 14. The only depends_on in this file that is not the database,
+      # on the only service that publishes. It is a convenience rather than a
+      # requirement: NatsConnection dials lazily, so Reviews starts against a
+      # broker that is not there and costs a warning per review instead.
+      mosaic-nats:
+        condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__Reviews: "Host=mosaic-db;Port=5432;Database=reviews;Username=mosaic;Password=mosaic"
+
+      # Chapter 14. The five other domain services have no such line, because
+      # Reviews is the only one that can be written to and therefore the only
+      # one with anything to announce.
+      ConnectionStrings__Nats: "nats://mosaic-nats:4222"
     ports:
       - "5105:8080"
     networks:

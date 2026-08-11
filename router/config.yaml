@@ -50,3 +50,23 @@ dev_mode: true
 # the environment variable that sets the same thing, which is the opposite of
 # what most container tooling does; see chapter 10.
 log_level: info
+
+# Chapter 14. Where the router gets its events from, for the one subgraph in
+# federation/mosaic.yaml that has no service behind it.
+#
+# This block and schema/streams.graphql are two halves of one feature and they
+# are deliberately in different files. The schema says which subject a field
+# listens on; this says where the broker is and how to authenticate to it. A
+# subject name is part of a contract between teams and belongs in a schema a
+# composer reads; a broker url is a property of a deployment and belongs
+# wherever the rest of the deployment's addresses live.
+#
+# `default` is the provider id every @edfs__natsSubscribe in this graph names,
+# because its providerId argument defaults to "default" and nothing overrides
+# it. A second broker would be a second entry here and a providerId on the
+# directive.
+events:
+  providers:
+    nats:
+      - id: default
+        url: "nats://host.docker.internal:4222"

@@ -1,0 +1,485 @@
+{
+  "info": {
+    "_postman_id": "6f0a9e2d-41b7-4c35-8d0a-92b7e5c14f68",
+    "name": "Mosaic realtime - chapter 14",
+    "description": "The half of chapter 14 that fits in a request and a response.\n\nDecision 43 of Federated GraphQL on .NET says why this collection is smaller than the chapter: newman speaks request and response, and a subscription is a connection that stays open. So the streaming half is scripts/subscription-run.mjs, which both verification scripts call, and this collection covers what is left - which turns out to be most of the chapter's surface.\n\nThe write path is here because it was never through the router before: chapters 5 to 13 exercised submitReview against the Reviews subgraph directly, and the plan a mutation gets is a different shape from a query's.\n\nThe two subscription fields are here as schema, not as streams. What a request can prove about them is that the graph declares both, that they are routed to different places, and that one of them belongs to a subgraph with no service behind it.\n\nStart the graph before running it:\n\n    docker compose up -d --build mosaic-db mosaic-nats mosaic-catalog \\\n        mosaic-pricing mosaic-inventory mosaic-accounts mosaic-reviews \\\n        mosaic-ordering mosaic-nodes mosaic-router\n\nOne request writes a review, so a second run against the same database submits a second one. Both are accepted, because they are by different customers.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "productId",
+      "value": ""
+    },
+    {
+      "key": "customerId",
+      "value": ""
+    },
+    {
+      "key": "submittedReviewId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Find a product and a customer who has not reviewed it",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const products = body.data.browseProducts.nodes;",
+              "const authorsOf = p => (p.reviews.nodes || []).map(r => r.author && r.author.id).filter(Boolean);",
+              "const taken = new Set(authorsOf(products[0]));",
+              "const everyone = new Set(products.flatMap(authorsOf));",
+              "const free = [...everyone].filter(id => !taken.has(id)).sort();",
+              "",
+              "// Mosaic has no root field listing customers, so the only route to",
+              "// one is through somebody's review. Chapter 19 owes the workbook a",
+              "// deterministic route; this is the one the gate uses too.",
+              "pm.test(\"there is a customer left who can review the first product\", function () {",
+              "    pm.expect(free.length, \"free customers\").to.be.above(0);",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"productId\", products[0].id);",
+              "pm.collectionVariables.set(\"customerId\", free[0]);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"{ browseProducts(first: 6) { nodes { id reviews(first: 20) { nodes { author { id } } } } } }\"}"
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "The graph declares two subscriptions, built opposite ways",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const fields = body.data.__schema.subscriptionType.fields.map(f => f.name).sort();",
+              "",
+              "// Chapter 5 built the first of these and chapter 14 added the",
+              "// second. They answer the same question and share no machinery:",
+              "// onReviewAdded is a field of the Reviews service, reviewPublished",
+              "// is a field of schema/streams.graphql, which has no service.",
+              "pm.test(\"the router serves both subscription fields\", function () {",
+              "    pm.expect(fields).to.eql([\"onReviewAdded\", \"reviewPublished\"]);",
+              "});",
+              "",
+              "const byName = Object.fromEntries(",
+              "    body.data.__schema.subscriptionType.fields.map(f => [f.name, f]));",
+              "",
+              "// Both return the same type, which is what makes the comparison",
+              "// fair: a client cannot tell from the schema which one is held",
+              "// open against a subgraph and which one is a broker subject.",
+              "pm.test(\"both return Review and take a product identifier\", function () {",
+              "    for (const name of [\"onReviewAdded\", \"reviewPublished\"]) {",
+              "        pm.expect(byName[name].type.ofType.name, name).to.eql(\"Review\");",
+              "        pm.expect(byName[name].args.map(a => a.name), name).to.eql([\"productId\"]);",
+              "    }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"{ __schema { subscriptionType { fields { name args { name } type { ofType { name } } } } } }\"}"
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "The subgraph knows about only one of them",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "const fields = body.data.__schema.subscriptionType.fields.map(f => f.name);",
+              "",
+              "// The same introspection against the service rather than the",
+              "// graph. This is where the two arrangements stop looking alike:",
+              "// Reviews implements onReviewAdded and has never heard of",
+              "// reviewPublished, because nothing implements reviewPublished.",
+              "pm.test(\"Reviews serves onReviewAdded\", function () {",
+              "    pm.expect(fields).to.include(\"onReviewAdded\");",
+              "});",
+              "",
+              "pm.test(\"Reviews has never heard of reviewPublished\", function () {",
+              "    pm.expect(fields).to.not.include(\"reviewPublished\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"{ __schema { subscriptionType { fields { name } } } }\"}"
+        },
+        "url": {
+          "raw": "{{reviewsUrl}}/graphql",
+          "host": [
+            "{{reviewsUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "A subscription plans to a trigger and a fetch",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const plan = pm.response.json().extensions.queryPlan;",
+              "",
+              "// Chapters 7 and 10 to 13 read plans made of Single, Parallel and",
+              "// Entity nodes. A subscription introduces a node kind none of",
+              "// them saw: the trigger is the part that happens once, and every",
+              "// child of it happens again on every event.",
+              "pm.test(\"the plan has a trigger\", function () {",
+              "    pm.expect(plan.trigger, \"trigger\").to.be.an(\"object\");",
+              "    pm.expect(plan.trigger.kind).to.eql(\"Trigger\");",
+              "    pm.expect(plan.trigger.subgraphName).to.eql(\"reviews\");",
+              "});",
+              "",
+              "// The trigger asks the subgraph for the author's key and nothing",
+              "// else, because Reviews has a two-field stub for Customer. The",
+              "// display name is a second fetch, and it is a child of the",
+              "// trigger rather than a sibling.",
+              "pm.test(\"the trigger asks only for the author's key\", function () {",
+              "    pm.expect(plan.trigger.query).to.include(\"author\");",
+              "    pm.expect(plan.trigger.query).to.not.include(\"displayName\");",
+              "});",
+              "",
+              "pm.test(\"the display name is an entity fetch that depends on the trigger\", function () {",
+              "    const fetch = plan.children[0].fetch;",
+              "    pm.expect(fetch.kind).to.eql(\"Entity\");",
+              "    pm.expect(fetch.subgraphName).to.eql(\"accounts\");",
+              "    pm.expect(fetch.dependsOnFetchIds).to.eql([plan.trigger.fetchId]);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "X-WG-Include-Query-Plan",
+            "value": "true"
+          },
+          {
+            "key": "X-WG-Skip-Loader",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"subscription($id: ID!) { onReviewAdded(productId: $id) { id rating author { displayName } } }\",\"variables\":{\"id\":\"{{productId}}\"}}"
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "The event-driven subscription plans the same way",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const plan = pm.response.json().extensions.queryPlan;",
+              "",
+              "// The subgraph name is the finding. Every other trigger and fetch",
+              "// in this book names a subgraph out of federation/mosaic.yaml;",
+              "// this one names a datasource index and a provider, because there",
+              "// is no service to name.",
+              "pm.test(\"the trigger is not a service\", function () {",
+              "    pm.expect(plan.trigger.kind).to.eql(\"Trigger\");",
+              "    pm.expect(plan.trigger.subgraphName).to.include(\"nats\");",
+              "});",
+              "",
+              "// Two entity fetches rather than one, and the first is the whole",
+              "// point: the broker message carries a type name and a key, so even",
+              "// the rating has to be fetched from Reviews.",
+              "pm.test(\"the review itself is fetched by key from Reviews\", function () {",
+              "    const fetch = plan.children[0].fetch;",
+              "    pm.expect(fetch.kind).to.eql(\"Entity\");",
+              "    pm.expect(fetch.subgraphName).to.eql(\"reviews\");",
+              "    pm.expect(fetch.query).to.include(\"rating\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "X-WG-Include-Query-Plan",
+            "value": "true"
+          },
+          {
+            "key": "X-WG-Skip-Loader",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"subscription($id: ID!) { reviewPublished(productId: $id) { id rating author { displayName } } }\",\"variables\":{\"id\":\"{{productId}}\"}}"
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "A mutation, through the router for the first time",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no transport errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const payload = body.data.submitReview;",
+              "",
+              "pm.test(\"the review was accepted\", function () {",
+              "    pm.expect(payload.errors, JSON.stringify(payload.errors)).to.be.null;",
+              "    pm.expect(payload.review.id, \"review.id\").to.be.a(\"string\");",
+              "});",
+              "",
+              "// The write goes to Reviews and the author's name comes from",
+              "// Accounts, so the payload of a mutation is resolved across a",
+              "// boundary exactly like the payload of a query. Chapters 5 to 13",
+              "// sent this mutation to the Reviews subgraph directly, where this",
+              "// field answered null.",
+              "pm.test(\"the payload resolved the author from another subgraph\", function () {",
+              "    pm.expect(payload.review.author, \"author\").to.be.an(\"object\");",
+              "    pm.expect(payload.review.author.displayName, \"displayName\").to.be.a(\"string\");",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"submittedReviewId\", payload.review.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"mutation($p: ID!, $c: ID!) { submitReview(input: { productId: $p, customerId: $c, rating: 5, body: \\\"Submitted through the router.\\\" }) { review { id rating author { displayName } } errors { __typename } } }\",\"variables\":{\"p\":\"{{productId}}\",\"c\":\"{{customerId}}\"}}"
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "The review the subscriptions announced is really there",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const node = pm.response.json().data.node;",
+              "",
+              "// Chapter 13's node field, used here to close the loop: the",
+              "// identifier the mutation returned is the one the broker message",
+              "// carried and the one both subscription payloads reported, and it",
+              "// addresses a row that exists.",
+              "pm.test(\"the identifier resolves to a Review\", function () {",
+              "    pm.expect(node.__typename).to.eql(\"Review\");",
+              "    pm.expect(node.rating).to.eql(5);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($id: ID!) { node(id: $id) { __typename ... on Review { rating author { displayName } } } }\",\"variables\":{\"id\":\"{{submittedReviewId}}\"}}"
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    }
+  ]
+}

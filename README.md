@@ -29,6 +29,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | `ch11` | 11. Entity Resolution Done Right | `Product.shippingCost`, the first field in Mosaic that needs something Catalog owns, declared `@requires(fields: "category")`. Plus `samples/entity-resolution`, where a reference resolver writes down every call the router makes to it and `@provides` is caught both saving a round trip and telling a lie |
 | `ch12` | 12. Strangling the Monolith | Six services. `Mosaic.Api` is gone and its five domains are `Mosaic.Pricing`, `Mosaic.Inventory`, `Mosaic.Accounts`, `Mosaic.Reviews` and `Mosaic.Ordering`, on 5102 to 5106, one database each. `Mosaic.ServiceDefaults` is the first project here that is not a service. `scripts/override-cases.mjs` produces nine `@override` behaviours on purpose, including the book's first composition warning |
 | `ch13` | 13. Hard Modeling Problems | Seven services. `Mosaic.Nodes` on 5107 owns `Query.node` and `Query.nodes` for the whole graph and has no database at all; `Review` and `Order` become entities so that the router can find one from an identifier. Catalog's paging cursor gets its tiebreaker back, which is a defect chapter 4 shipped and no schema could show. Plus `samples/interface-object` and `scripts/modeling-cases.mjs`, fourteen cases about enums, value types, scalars and `node` |
+| `ch14` | 14. Real-Time in a Federated World | Seven services and an eighth subgraph that is a file. `schema/streams.graphql` declares one subscription field and a NATS subject and has no project behind it: the router subscribes to the broker itself and resolves the payload from a type name and a key. `Mosaic.Reviews` gains the publisher that feeds it and `mosaic-nats` joins `docker-compose.yml`. Plus `scripts/realtime-cases.mjs`, eight cases about a transport no schema mentions, and `scripts/subscription-run.mjs`, which finally puts a subscription inside the gate |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -404,12 +405,16 @@ samples/entity-attribute-placement/
                            [Key] and [ReferenceResolver] may go; chapter 8
 samples/entity-resolution/ two subgraphs built to be watched: what _entities
                            does with a list, and what @provides hides; chapter 11
-schema/                  committed SDL snapshots, one per service
+schema/                  committed SDL snapshots, one per service, plus
+                         streams.graphql - a subgraph with no service, whose
+                         one field the router resolves off NATS; chapter 14
 postman/                 collections and environments
-scripts/                 verify.ps1 and verify.sh, plus the four case runners
-                         they both call: composition-cases.mjs,
-                         router-cases.mjs, entity-cases.mjs and
-                         override-cases.mjs
+scripts/                 verify.ps1 and verify.sh, plus the case runners they
+                         both call: composition-cases.mjs, router-cases.mjs,
+                         entity-cases.mjs, override-cases.mjs,
+                         modeling-cases.mjs and realtime-cases.mjs, and
+                         subscription-run.mjs, which opens both subscriptions
+                         through the router and asserts one write reaches both
 ```
 
 Each domain's `Data/` folder holds everything that domain knows about storage:

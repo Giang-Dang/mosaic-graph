@@ -16,6 +16,14 @@ builder.Services.AddReviewsDatabase(
 
 builder.Services.AddReviewsDomain();
 
+// Chapter 14. The broker Reviews announces on, and the only configuration in
+// this file that is not a database. It has a default because a reader running
+// one service by hand should not have to set an environment variable to get a
+// service that starts; a broker that is not there costs a warning per review
+// and nothing else.
+builder.Services.AddReviewStreams(
+    builder.Configuration.GetConnectionString("Nats") ?? "nats://localhost:4222");
+
 // The largest of the five Program.cs files chapter 12 wrote, and the reason is
 // that Reviews is the only one of the six subgraphs that can be written to.
 // Four of the calls below exist for the mutation and the subscription; the

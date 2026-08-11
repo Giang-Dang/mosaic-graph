@@ -1,8 +1,10 @@
+using HotChocolate.Resolvers;
 using HotChocolate.Subscriptions;
 using Mosaic.Reviews.Accounts.Model;
 using Mosaic.Reviews.Catalog.Model;
 using Mosaic.Reviews.Data;
 using Mosaic.Reviews.Model;
+using Mosaic.Reviews.Streams;
 
 namespace Mosaic.Reviews.Types;
 
@@ -85,6 +87,8 @@ public static partial class ReviewMutations
         string? body,
         ReviewsService reviews,
         ITopicEventSender sender,
+        ReviewStreamPublisher stream,
+        IResolverContext context,
         CancellationToken cancellationToken)
     {
         var review = await reviews.SubmitReviewAsync(
@@ -101,6 +105,14 @@ public static partial class ReviewMutations
             ReviewTopics.ReviewAdded(productId),
             review,
             cancellationToken);
+
+        // The same fact, announced a second time and to a different audience.
+        // Chapter 14 added this line and did not remove the one above, because
+        // the two arrangements are the chapter's argument rather than a
+        // migration: one subscription is a field of this service and one is a
+        // field of no service. Both fire from here so that a reader can watch
+        // them answer the same write.
+        await stream.PublishAsync(review, productId, context, cancellationToken);
 
         return review;
     }

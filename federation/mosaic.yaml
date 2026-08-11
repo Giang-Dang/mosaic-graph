@@ -49,6 +49,27 @@ subgraphs:
     routing_url: http://localhost:5105/graphql
     schema:
       file: ../schema/reviews.graphql
+    # Chapter 14. The only subgraph in this file with a subscription block, and
+    # the only one that needs one, because it is the only one with a
+    # Subscription type. Everything here is a default made explicit except the
+    # last line, which is a default overridden.
+    #
+    # Left to itself the router offers a subgraph both WebSocket subprotocols
+    # and lets it pick. HotChocolate 16.6.0 picks the first one registered in
+    # its own container rather than the first one offered, and that is the
+    # Apollo subscriptions-transport-ws handler, whose subprotocol name is
+    # confusingly `graphql-ws`. So the default arrangement quietly runs on a
+    # protocol that has been deprecated since 2019. Naming it here is what makes
+    # the handshake answer `graphql-transport-ws` instead.
+    #
+    # Note the spelling. wgc 0.129.7's own documentation writes this key as
+    # `websocket_subprotocol`, matching every other key in this file; the code
+    # reads `websocketSubprotocol`. The documented spelling composes without a
+    # word and leaves the setting at auto.
+    subscription:
+      url: http://localhost:5105/graphql
+      protocol: ws
+      websocketSubprotocol: graphql-transport-ws
 
   - name: ordering
     routing_url: http://localhost:5106/graphql
@@ -59,3 +80,17 @@ subgraphs:
     routing_url: http://localhost:5107/graphql
     schema:
       file: ../schema/nodes.graphql
+
+  # Chapter 14, and the strangest entry in this file: a subgraph with no
+  # service behind it. schema/streams.graphql declares one subscription field
+  # and one directive, and there is no project, no port and no process. The
+  # router reads the directive, connects to NATS itself, and resolves the
+  # payload out of the other seven by key.
+  #
+  # routing_url is required and is never called. It is pointed at a port
+  # nothing listens on deliberately: a reader who suspects something is quietly
+  # serving this can check.
+  - name: streams
+    routing_url: http://localhost:5108/graphql
+    schema:
+      file: ../schema/streams.graphql

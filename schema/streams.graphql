@@ -1,0 +1,28 @@
+schema
+  @link(
+    url: "https://specs.apollo.dev/federation/v2.6"
+    import: ["@key", "@external"]
+  ) {
+  subscription: Subscription
+}
+
+directive @edfs__natsSubscribe(
+  subjects: [String!]!
+  providerId: String! = "default"
+  streamConfiguration: edfs__NatsStreamConfiguration
+) on FIELD_DEFINITION
+
+input edfs__NatsStreamConfiguration {
+  consumerInactiveThreshold: Int! = 30
+  consumerName: String!
+  streamName: String!
+}
+
+type Subscription {
+  reviewPublished(productId: ID!): Review!
+    @edfs__natsSubscribe(subjects: ["mosaic.reviewAdded.{{ args.productId }}"])
+}
+
+type Review @key(fields: "id", resolvable: false) {
+  id: ID! @external
+}

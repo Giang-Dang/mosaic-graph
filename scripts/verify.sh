@@ -170,6 +170,19 @@ INTERFACE_OBJECT_DIR="$REPO_ROOT/samples/interface-object"
 NODES_POSTMAN="$REPO_ROOT/postman/mosaic-nodes.postman_collection.json"
 NODES_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-nodes.local.postman_environment.json"
 
+# -- chapter 14's real time -------------------------------------------------
+
+# Two scripts, a static half and a running half, failing for unrelated reasons.
+# realtime-cases.mjs edits the composer's input rather than a schema, because a
+# subscription transport is configured rather than declared, and asserts the
+# subscription block wgc wrote. subscription-run.mjs opens both of Mosaic's
+# subscriptions through the router, submits one review and checks that both
+# deliver it, which is the hole chapter 5 recorded in its own prose.
+REALTIME_CASES="$REPO_ROOT/scripts/realtime-cases.mjs"
+SUBSCRIPTION_RUN="$REPO_ROOT/scripts/subscription-run.mjs"
+REALTIME_POSTMAN="$REPO_ROOT/postman/mosaic-realtime.postman_collection.json"
+REALTIME_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-realtime.local.postman_environment.json"
+
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
 # Product.shippingCost, read off each subgraph's own request timeline. They are
@@ -387,6 +400,7 @@ TEMP_DIR=""
 SUMMARY=""
 JSON_TOOL=""
 STARTED_DATABASE=0
+STARTED_BROKER=0
 CATALOG_PID=""
 REVIEWS_PID=""
 STARTED_ROUTER=0
@@ -886,6 +900,13 @@ cleanup() {
         docker compose --project-directory "$REPO_ROOT" stop mosaic-db >/dev/null 2>&1 || true
     fi
 
+    # The broker holds nothing worth keeping: every subject in this graph is
+    # fire and forget, and nothing in Mosaic reads a stream back. Stopped on
+    # the same switch as the database so one flag leaves the whole stack up.
+    if [ "$STARTED_BROKER" -eq 1 ] && [ "$KEEP_DATABASE" != "1" ]; then
+        docker compose --project-directory "$REPO_ROOT" stop mosaic-nats >/dev/null 2>&1 || true
+    fi
+
     printf '\n--- summary ---\n'
     printf '%s' "$SUMMARY"
     if [ "$status" -eq 0 ]; then
@@ -947,6 +968,28 @@ start against a volume written by an earlier major version.
 fi
 STARTED_DATABASE=1
 step_ok 'postgres is up and healthy'
+
+# Chapter 14's broker, started the same way and for the same reason: it is
+# described in docker-compose.yml and nowhere else. Reviews publishes to it and
+# the router subscribes to it, and the subgraph that declares the field in
+# between is a schema file with no process.
+#
+# Started here rather than beside the router because Reviews connects at
+# start-up, and a broker that arrives late costs a warning per review rather
+# than an error - which would make the event-driven subscription fail much
+# later and for a reason nothing prints.
+docker compose --project-directory "$REPO_ROOT" up --detach --wait \
+    --wait-timeout "$DATABASE_TIMEOUT_SECONDS" mosaic-nats
+if [ $? -ne 0 ]; then
+    step_fail 'broker' "docker compose up mosaic-nats failed.
+The health check hits the monitoring endpoint on 8222, which the -m flag in the
+compose command turns on. If the container is up but unhealthy, something else
+is on 4222 or 8222.
+
+    docker compose logs mosaic-nats"
+fi
+STARTED_BROKER=1
+step_ok 'nats is up and healthy'
 
 # -- 2. restore and build ---------------------------------------------------
 
@@ -1874,6 +1917,31 @@ loosen.'
         step_ok 'the sixteen modelling behaviours chapter 13 prints are the ones wgc produces'
     fi
 
+    # -- 8b4. the subscription transport, which is chapter 14's subject ------
+
+    # Eight cases, and the only ones in this script that edit the composer's
+    # input rather than a subgraph schema. None needs a service running, and
+    # all eight compose: a subscription transport is not part of any schema, so
+    # there is no error to assert and the assertion is on the execution config
+    # wgc wrote. Two of the eight are wgc disagreeing with its own
+    # documentation, and both are silent.
+    if [ ! -f "$REALTIME_CASES" ]; then
+        step_skip 'realtime cases' 'scripts/realtime-cases.mjs does not exist yet'
+    elif ! command -v node >/dev/null 2>&1; then
+        step_fail 'realtime cases' 'node is not on PATH; it is needed to run scripts/realtime-cases.mjs.'
+    else
+        node "$REALTIME_CASES"
+        if [ $? -ne 0 ]; then
+            step_fail 'realtime cases' 'scripts/realtime-cases.mjs failed.
+One of the transport behaviours chapter 14 describes has changed. The first case
+to check is the baseline: it reads the reviews subscription block out of
+federation/mosaic.yaml and fails if the pinned subprotocol is gone, because the
+chapter argues for pinning it and the default is the protocol Apollo deprecated
+in 2019.'
+        fi
+        step_ok 'the eight subscription-transport behaviours chapter 14 prints are the ones wgc produces'
+    fi
+
     # -- 8c. chapter 10: a router in front of the seven ---------------------
 
     # The first section that asks the graph a question rather than asking a
@@ -2319,6 +2387,122 @@ published schema, so nothing else in this gate would catch it."
         done
         IFS="$old_ifs"
         step_ok 'a page selecting only title carries real cursors and does not repeat a row'
+
+        # -- 8g. chapter 14: two subscriptions and one write ------------
+
+        # The step chapter 5 said would not exist. Its own prose named this as
+        # the one thing nothing re-checked, and decision 43 accepted that on
+        # the grounds that newman speaks request and response and a
+        # subscription is a connection that stays open. That is still true of
+        # newman and is why this is a node script rather than a tenth
+        # collection.
+        #
+        # One review goes through the router while two subscriptions are open
+        # on it, and both have to deliver it. They work in opposite directions,
+        # which is the point: onReviewAdded is a field of the Reviews service
+        # and the router holds a WebSocket to it; reviewPublished is a field of
+        # a schema file and the router holds a NATS subscription instead.
+        #
+        # The author is a customer who has not reviewed this product in the
+        # seed data, because a duplicate is refused by the domain, publishes
+        # nothing, and would look exactly like a subscription that broke.
+        if [ ! -f "$SUBSCRIPTION_RUN" ]; then
+            step_skip 'subscriptions' 'scripts/subscription-run.mjs does not exist yet'
+        elif ! command -v node >/dev/null 2>&1; then
+            step_fail 'subscriptions' 'node is not on PATH; it is needed to run scripts/subscription-run.mjs.'
+        else
+            printf '{"query":"{ browseProducts(first: 6) { nodes { id reviews(first: 20) { nodes { author { id } } } } } }"}' \
+                > "$TEMP_DIR/subscription-seed-request.json"
+            post_graphql "$ROUTER_URL" "$TEMP_DIR/subscription-seed-request.json" \
+                "$TEMP_DIR/subscription-seed.json" 'subscriptions'
+
+            # Mosaic has no root field listing customers, so the only route to
+            # one is through somebody's review. Chapter 19 owns giving the gate
+            # a deterministic route; until then this walks six products, takes
+            # the first, and picks any author who has not already reviewed it.
+            subscription_pair="$(python3 - "$TEMP_DIR/subscription-seed.json" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    products = ((json.load(handle).get("data") or {}).get("browseProducts") or {}).get("nodes") or []
+
+if not products:
+    raise SystemExit("")
+
+target = products[0]
+authors_of = lambda p: {r["author"]["id"] for r in (p.get("reviews") or {}).get("nodes") or [] if r.get("author")}
+taken = authors_of(target)
+everyone = set()
+for product in products:
+    everyone |= authors_of(product)
+
+free = sorted(everyone - taken)
+print("%s\t%s" % (target["id"], free[0]) if free else "")
+PY
+)"
+            subscription_pair="$(printf '%s' "$subscription_pair" | tr -d '\r')"
+            subscription_product="$(printf '%s' "$subscription_pair" | cut -f1)"
+            subscription_customer="$(printf '%s' "$subscription_pair" | cut -f2)"
+
+            if [ -z "$subscription_product" ] || [ -z "$subscription_customer" ]; then
+                step_fail 'subscriptions' 'Every customer this gate can reach has already reviewed the first product,
+so there is no write left that the domain would accept. Mosaic has no root field
+listing customers, which is why this walks reviews to find one; a seed change
+that gives the first product every reviewer breaks it. Chapter 19 owns giving
+the gate a deterministic route to a customer.'
+            fi
+
+            node "$SUBSCRIPTION_RUN" \
+                --router "$ROUTER_URL/graphql" \
+                --reviews "$MOSAIC_REVIEWS_URL/graphql" \
+                --product "$subscription_product" \
+                --customer "$subscription_customer"
+            if [ $? -ne 0 ]; then
+                step_fail 'subscriptions' 'scripts/subscription-run.mjs failed.
+Its output above says which of the checks failed. If only the event-driven half
+failed, the broker is the first thing to look at: the router needs the
+events.providers.nats block in router/config.yaml and Reviews needs
+ConnectionStrings__Nats, and a Reviews that cannot reach the broker logs a
+warning per review rather than failing.'
+            fi
+            step_ok 'one review, submitted through the router, arrived on both subscriptions'
+        fi
+
+        # The rest of chapter 14, in the form newman can carry. Decision 43 is
+        # why this is separate from the step above rather than one collection
+        # covering everything: a subscription is a connection that stays open
+        # and newman is not built for one. What a request and a response can
+        # prove is a lot, though - that the graph declares both fields, that
+        # the subgraph has heard of only one, that both plan to a Trigger node,
+        # and that a mutation now goes through the router and comes back with a
+        # field from another subgraph in its payload.
+        if [ ! -f "$REALTIME_POSTMAN" ] || [ ! -f "$REALTIME_POSTMAN_ENV" ]; then
+            step_skip 'realtime postman' 'the realtime collection or its environment is missing from postman/'
+        elif [ -z "$NEWMAN_BIN" ]; then
+            step_skip 'realtime postman' 'newman is not installed - run npm install first'
+        else
+            if [ "$NEWMAN_VIA_NPX" -eq 1 ]; then
+                "$NEWMAN_BIN" --no newman run "$REALTIME_POSTMAN" \
+                    --environment "$REALTIME_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --env-var "reviewsUrl=$MOSAIC_REVIEWS_URL" \
+                    --bail
+            else
+                "$NEWMAN_BIN" run "$REALTIME_POSTMAN" \
+                    --environment "$REALTIME_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --env-var "reviewsUrl=$MOSAIC_REVIEWS_URL" \
+                    --bail
+            fi
+            if [ $? -ne 0 ]; then
+                step_fail 'realtime postman' 'newman failed; its output above says which request failed.
+The two plan requests use X-WG-Skip-Loader, so they never touch a subgraph and
+cannot fail for a data reason. The mutation can: it needs a customer who has not
+already reviewed the first product, which the first request in the collection
+goes looking for.'
+            fi
+            step_ok 'the realtime collection passes against the router'
+        fi
 
         # Down rather than stop, and now rather than in the trap, because the
         # federated-wire section below wants this port.

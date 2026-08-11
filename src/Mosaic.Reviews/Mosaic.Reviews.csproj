@@ -16,6 +16,12 @@
     <PackageReference Include="HotChocolate.Data.EntityFramework" />
     <PackageReference Include="HotChocolate.Subscriptions.InMemory" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+
+    <!-- Chapter 14. The one place the six subgraphs stop being identical: this
+         is the only service that writes, so it is the only one with anything to
+         announce. Reviews publishes to NATS and subscribes to nothing. -->
+    <PackageReference Include="NATS.Net" />
+    <PackageReference Include="NATS.Client.Hosting" />
     <PackageReference Include="HotChocolate.Types.Analyzers">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>

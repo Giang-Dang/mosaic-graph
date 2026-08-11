@@ -216,6 +216,27 @@ $InterfaceObjectDir = Join-Path $RepoRoot 'samples' 'interface-object'
 $NodesPostman       = Join-Path $RepoRoot 'postman' 'mosaic-nodes.postman_collection.json'
 $NodesPostmanEnv    = Join-Path $RepoRoot 'postman' 'mosaic-nodes.local.postman_environment.json'
 
+# -- chapter 14's real time --------------------------------------------------
+
+# Two scripts, because chapter 14 has a static half and a running half and they
+# fail for unrelated reasons.
+#
+# realtime-cases.mjs is the static half and needs nothing started. Its cases
+# edit the composer's input rather than a schema, because a subscription
+# transport is configured rather than declared, and what it asserts is the
+# subscription block the composer wrote - which is the only place any of this
+# is visible, since none of it reaches the client-facing schema.
+#
+# subscription-run.mjs is the running half, and it is the thing chapter 5 said
+# did not exist. It opens both of Mosaic's subscriptions through the router,
+# submits one review, and checks that both deliver it. That closes the hole
+# chapter 5 recorded in its own prose: until this chapter, a change that broke
+# onReviewAdded passed this gate without a word.
+$RealtimeCases      = Join-Path $RepoRoot 'scripts' 'realtime-cases.mjs'
+$SubscriptionRun    = Join-Path $RepoRoot 'scripts' 'subscription-run.mjs'
+$RealtimePostman    = Join-Path $RepoRoot 'postman' 'mosaic-realtime.postman_collection.json'
+$RealtimePostmanEnv = Join-Path $RepoRoot 'postman' 'mosaic-realtime.local.postman_environment.json'
+
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
 # Product.shippingCost, read off each subgraph's own request timeline. They are
@@ -607,6 +628,7 @@ function Get-LogTail {
 # so the finally block can stop whatever got as far as starting.
 $tempDir = $null
 $startedDatabase = $false
+$startedBroker = $false
 $wireProcesses = @{}
 $startedRouter = $false
 $startedMosaicRouter = $false
@@ -660,6 +682,28 @@ try {
     }
     $startedDatabase = $true
     Write-Ok 'postgres is up and healthy'
+
+    # Chapter 14's broker, started the same way and for the same reason: it is
+    # described in docker-compose.yml and nowhere else. Reviews publishes to it
+    # and the router subscribes to it, and the subgraph that declares the field
+    # in between is a schema file with no process.
+    #
+    # Started here rather than beside the router because Reviews connects to it
+    # at start-up, and a broker that arrives late costs a warning per review
+    # rather than an error - which would make the event-driven subscription
+    # fail much later and for a reason nothing prints.
+    & docker compose --project-directory $RepoRoot up --detach --wait --wait-timeout $DatabaseTimeoutSeconds mosaic-nats
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Verify 'broker' (Join-Lines @(
+            "docker compose up mosaic-nats exited with $LASTEXITCODE."
+            'The health check hits the monitoring endpoint on 8222, which the -m flag'
+            'in the compose command turns on. If the container is up but unhealthy,'
+            'something else is on 4222 or 8222.'
+            ''
+            '    docker compose logs mosaic-nats'))
+    }
+    $startedBroker = $true
+    Write-Ok 'nats is up and healthy'
 
     # -- 2. restore and build ----------------------------------------------
 
@@ -1653,6 +1697,36 @@ try {
             Write-Ok 'the sixteen modelling behaviours chapter 13 prints are the ones wgc produces'
         }
 
+        # -- 8b4. the subscription transport, which is chapter 14's subject ---
+
+        # Eight cases, and the only ones in this script that edit the
+        # composer's input rather than a subgraph schema. None of them needs a
+        # service running, and all eight compose: a subscription transport is
+        # not part of any schema, so there is no error to assert and the
+        # assertion is on the execution config wgc wrote.
+        #
+        # Two of the eight are wgc disagreeing with its own documentation, and
+        # both are silent. Worth reading the output rather than the exit code
+        # if a wgc upgrade turns them red, because a fix upstream would be good
+        # news that fails this gate.
+        if (-not (Test-Path -LiteralPath $RealtimeCases)) {
+            Write-Skipped 'realtime cases' 'scripts/realtime-cases.mjs does not exist yet'
+        } elseif (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+            Stop-Verify 'realtime cases' 'node is not on PATH; it is needed to run scripts/realtime-cases.mjs.'
+        } else {
+            & node $RealtimeCases
+            if ($LASTEXITCODE -ne 0) {
+                Stop-Verify 'realtime cases' (Join-Lines @(
+                    "scripts/realtime-cases.mjs exited with $LASTEXITCODE."
+                    'One of the transport behaviours chapter 14 describes has changed. The'
+                    'first case to check is the baseline: it reads the reviews subscription'
+                    'block out of federation/mosaic.yaml and fails if the pinned subprotocol'
+                    'is gone, because the chapter argues for pinning it and the default is'
+                    'the protocol Apollo deprecated in 2019.'))
+            }
+            Write-Ok 'the eight subscription-transport behaviours chapter 14 prints are the ones wgc produces'
+        }
+
         # -- 8c. chapter 10: a router in front of the two ---------------------
 
         # The first section that asks the graph a question rather than asking a
@@ -2030,6 +2104,112 @@ try {
             }
             Write-Ok 'a page selecting only title carries real cursors and does not repeat a row'
 
+            # -- 8g. chapter 14: two subscriptions and one write --------------
+
+            # The step chapter 5 said would not exist. Its own prose named this
+            # as the one thing nothing re-checked, and decision 43 accepted
+            # that, on the grounds that newman speaks request and response and
+            # a subscription is a connection that stays open. That is still
+            # true of newman and is why this is a node script rather than a
+            # tenth collection.
+            #
+            # One review is submitted through the router while two
+            # subscriptions are open on it, and both have to deliver it. They
+            # work in opposite directions and that is the point: onReviewAdded
+            # is a field of the Reviews service and the router holds a
+            # WebSocket to it, reviewPublished is a field of a schema file and
+            # the router holds a NATS subscription instead. A failure in one
+            # and not the other says which half broke.
+            #
+            # The author is chosen from a customer who has not reviewed this
+            # product in the seed data, because a duplicate is refused by the
+            # domain, publishes nothing, and would look exactly like a
+            # subscription that stopped working.
+            if (-not (Test-Path -LiteralPath $SubscriptionRun)) {
+                Write-Skipped 'subscriptions' 'scripts/subscription-run.mjs does not exist yet'
+            } elseif (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+                Stop-Verify 'subscriptions' 'node is not on PATH; it is needed to run scripts/subscription-run.mjs.'
+            } else {
+                $subscriptionProduct = Invoke-Gql -Url $MosaicRouterUrl -Step 'subscriptions' -Query @'
+{ browseProducts(first: 1) { nodes { id } } }
+'@
+                $productId = $subscriptionProduct.data.browseProducts.nodes[0].id
+
+                # A customer nobody has to look up by name. Ordering references
+                # customers and Reviews does too, so an author on somebody
+                # else's review is a real identifier; the seed data gives the
+                # first product six reviewers out of twelve customers, so the
+                # last author of the third product is reliably not one of them.
+                $otherReviewers = Invoke-Gql -Url $MosaicRouterUrl -Step 'subscriptions' -Query @"
+{ node(id: "$productId") { ... on Product { reviews(first: 20) { nodes { author { id } } } } } }
+"@
+                $taken = @($otherReviewers.data.node.reviews.nodes | ForEach-Object { $_.author.id })
+                $everyone = Invoke-Gql -Url $MosaicRouterUrl -Step 'subscriptions' -Query @'
+{ browseProducts(first: 6) { nodes { reviews(first: 20) { nodes { author { id } } } } } }
+'@
+                $candidates = @($everyone.data.browseProducts.nodes
+                    | ForEach-Object { $_.reviews.nodes }
+                    | ForEach-Object { $_.author.id }
+                    | Sort-Object -Unique
+                    | Where-Object { $taken -notcontains $_ })
+
+                if ($candidates.Count -eq 0) {
+                    Stop-Verify 'subscriptions' (Join-Lines @(
+                        'Every customer this gate can reach has already reviewed the first product,'
+                        'so there is no write left that the domain would accept. Mosaic has no root'
+                        'field listing customers, which is why this walks reviews to find one; a'
+                        'seed change that gives the first product every reviewer breaks it. Chapter'
+                        '19 owns giving the gate a deterministic route to a customer.'))
+                }
+
+                & node $SubscriptionRun `
+                    --router "$MosaicRouterUrl/graphql" `
+                    --reviews "$($Subgraphs['reviews'].Url)/graphql" `
+                    --product $productId `
+                    --customer $candidates[0]
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'subscriptions' (Join-Lines @(
+                        "scripts/subscription-run.mjs exited with $LASTEXITCODE."
+                        'Its output above says which of the checks failed. If only the'
+                        'event-driven half failed, the broker is the first thing to look at:'
+                        'the router needs the events.providers.nats block in router/config.yaml'
+                        'and Reviews needs ConnectionStrings__Nats, and a Reviews that cannot'
+                        'reach the broker logs a warning per review rather than failing.'))
+                }
+                Write-Ok 'one review, submitted through the router, arrived on both subscriptions'
+            }
+
+            # The rest of chapter 14, in the form newman can carry. Decision 43
+            # is why this is a separate thing from the step above rather than a
+            # tenth collection covering everything: a subscription is a
+            # connection that stays open and newman is not built for one. What
+            # a request and a response can prove is a lot, though - that the
+            # graph declares both fields, that the subgraph has heard of only
+            # one, that both plan to a Trigger node, and that a mutation now
+            # goes through the router and comes back with a field from another
+            # subgraph in its payload.
+            if (-not (Test-Path -LiteralPath $RealtimePostman) -or -not (Test-Path -LiteralPath $RealtimePostmanEnv)) {
+                Write-Skipped 'realtime postman' 'the realtime collection or its environment is missing from postman/'
+            } elseif (-not $newmanCommand) {
+                Write-Skipped 'realtime postman' 'newman is not installed - run npm install first'
+            } else {
+                & $newmanCommand @($newmanPrefix + @(
+                    'run', $RealtimePostman,
+                    '--environment', $RealtimePostmanEnv,
+                    '--env-var', "routerUrl=$MosaicRouterUrl",
+                    '--env-var', "reviewsUrl=$($Subgraphs['reviews'].Url)",
+                    '--bail'))
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'realtime postman' (Join-Lines @(
+                        "newman exited with $LASTEXITCODE; its output above says which request failed."
+                        'The two plan requests use X-WG-Skip-Loader, so they never touch a'
+                        'subgraph and cannot fail for a data reason. The mutation can: it needs'
+                        'a customer who has not already reviewed the first product, which the'
+                        'first request in the collection goes looking for.'))
+                }
+                Write-Ok 'the realtime collection passes against the router'
+            }
+
             # Down rather than stop, and now rather than in the finally block,
             # because the federated-wire section below wants this port.
             & docker compose --project-directory $RepoRoot down mosaic-router *> $null
@@ -2354,6 +2534,14 @@ try {
     # want to keep.
     if ($startedDatabase -and -not $KeepDatabase) {
         & docker compose --project-directory $RepoRoot stop mosaic-db *> $null
+    }
+
+    # The broker holds nothing worth keeping: every subject in this graph is
+    # fire and forget, and nothing in Mosaic reads a stream back. Stopped on
+    # the same switch as the database so that one flag leaves the whole stack
+    # up for poking at.
+    if ($startedBroker -and -not $KeepDatabase) {
+        & docker compose --project-directory $RepoRoot stop mosaic-nats *> $null
     }
 }
 
