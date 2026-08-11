@@ -54,11 +54,16 @@ const withEndpoint = (url) => {
 const routerUrl = withEndpoint(args.get('router') ?? 'http://localhost:3002/graphql');
 const reviewsUrl = withEndpoint(args.get('reviews') ?? 'http://localhost:5105/graphql');
 const productId = args.get('product');
-const customerId = args.get('customer');
+// One or more customers, comma separated. Each one submits one review, so the
+// count is how many events the held subscription has to deliver. Chapter 14
+// prints what a graph does per event rather than per subscription, and one
+// event cannot tell those two apart.
+const customerIds = (args.get('customer') ?? '').split(',').filter(Boolean);
 const timeoutMs = Number(args.get('timeout') ?? 20000);
 
-if (!productId || !customerId) {
+if (!productId || customerIds.length === 0) {
   console.error('--product and --customer are required, both as global object identifiers.');
+  console.error('--customer takes a comma-separated list; one review is submitted per customer.');
   process.exit(2);
 }
 
@@ -197,22 +202,33 @@ async function main() {
   try {
     await Promise.all([held.ready, driven.ready]);
 
-    const mutation = `mutation { submitReview(input: { productId: "${productId}", `
-      + `customerId: "${customerId}", rating: 4, body: "Written while two subscriptions were open." }) `
-      + '{ review { id } errors { __typename } } }';
-    const response = await fetch(routerUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ query: mutation }),
-    }).then((r) => r.json());
+    const submittedIds = [];
+    for (const [index, customerId] of customerIds.entries()) {
+      const mutation = `mutation { submitReview(input: { productId: "${productId}", `
+        + `customerId: "${customerId}", rating: 4, body: "Write ${index + 1} of `
+        + `${customerIds.length}, with two subscriptions open." }) `
+        + '{ review { id } errors { __typename } } }';
+      const response = await fetch(routerUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ query: mutation }),
+      }).then((r) => r.json());
 
-    const submitted = response?.data?.submitReview?.review?.id;
-    note(
-      Boolean(submitted),
-      'the mutation went through the router and was accepted',
-      submitted ?? JSON.stringify(response?.data?.submitReview?.errors ?? response?.errors),
-    );
-    if (!submitted) return;
+      const id = response?.data?.submitReview?.review?.id;
+      if (!id) {
+        note(false, `write ${index + 1} was accepted`,
+          JSON.stringify(response?.data?.submitReview?.errors ?? response?.errors));
+        return;
+      }
+      submittedIds.push(id);
+      // Spaced, because what is being measured is one round trip per message
+      // rather than the router's behaviour under a burst. Chapter 24 owns the
+      // burst.
+      await new Promise((r) => setTimeout(r, 400));
+    }
+
+    const submitted = submittedIds[0];
+    note(true, `${submittedIds.length} mutation(s) went through the router and were accepted`, submitted);
 
     const heldEvent = await Promise.race([held.first, deadline('onReviewAdded', timeoutMs)]);
     const heldReview = heldEvent?.data?.onReviewAdded;
@@ -220,6 +236,18 @@ async function main() {
       heldReview?.id === submitted,
       'onReviewAdded delivered the review that was just written',
       heldReview?.id ?? JSON.stringify(heldEvent),
+    );
+
+    // One event per write, on one connection. This is the assertion behind the
+    // count chapter 14 prints: the trigger happened once and the payload was
+    // delivered as many times as the graph was written to.
+    await new Promise((r) => setTimeout(r, 1500));
+    const heldIds = held.events.map((e) => e?.data?.onReviewAdded?.id).filter(Boolean);
+    note(
+      heldIds.length === submittedIds.length
+        && submittedIds.every((id) => heldIds.includes(id)),
+      `the held subscription delivered one event per write (${submittedIds.length})`,
+      `${heldIds.length} event(s)`,
     );
     // The subgraph holding the connection has a two-field stub for Customer
     // and no display name anywhere in it. A name here is the router having run

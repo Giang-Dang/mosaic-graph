@@ -2162,11 +2162,24 @@ try {
                         '19 owns giving the gate a deterministic route to a customer.'))
                 }
 
+                # Three writes rather than one, because chapter 14's finding is
+                # about what happens per event rather than per subscription,
+                # and one event cannot tell those two apart.
+                $writers = @($candidates | Select-Object -First 3)
+
+                # What Accounts has served so far. The chapter prints a table
+                # of these counts, and the claim in it is that opening a
+                # subscription costs Accounts nothing and every event costs it
+                # one _entities call. Both halves are asserted below, because a
+                # number this book prints has something that produces it again.
+                $accountsBefore = ([regex]::Matches(
+                    (Get-LogText $Subgraphs['accounts'].Stdout), 'Mosaic\.RequestTimeline')).Count
+
                 & node $SubscriptionRun `
                     --router "$MosaicRouterUrl/graphql" `
                     --reviews "$($Subgraphs['reviews'].Url)/graphql" `
                     --product $productId `
-                    --customer $candidates[0]
+                    --customer ($writers -join ',')
                 if ($LASTEXITCODE -ne 0) {
                     Stop-Verify 'subscriptions' (Join-Lines @(
                         "scripts/subscription-run.mjs exited with $LASTEXITCODE."
@@ -2176,7 +2189,28 @@ try {
                         'and Reviews needs ConnectionStrings__Nats, and a Reviews that cannot'
                         'reach the broker logs a warning per review rather than failing.'))
                 }
-                Write-Ok 'one review, submitted through the router, arrived on both subscriptions'
+                Write-Ok "$($writers.Count) reviews, submitted through the router, arrived on both subscriptions"
+
+                # The per-event cost, counted rather than asserted from a plan.
+                # Each write is answered on two subscriptions and each of those
+                # payloads selects author.displayName, which Reviews cannot
+                # answer, so Accounts serves one _entities call per delivery.
+                # The event-driven subscription also fetches the review itself,
+                # which is Reviews' work rather than Accounts'.
+                $accountsAfter = ([regex]::Matches(
+                    (Get-LogText $Subgraphs['accounts'].Stdout), 'Mosaic\.RequestTimeline')).Count
+                $accountsDelta = $accountsAfter - $accountsBefore
+                $expectedDelta = $writers.Count * 2
+                if ($accountsDelta -ne $expectedDelta) {
+                    Stop-Verify 'per-event cost' (Join-Lines @(
+                        "Accounts served $accountsDelta requests across $($writers.Count) writes; expected $expectedDelta."
+                        'Chapter 14 prints this as one entity fetch per event per subscription,'
+                        'and both subscriptions select author.displayName. A smaller number means'
+                        'the router started caching the author across events, which would be a'
+                        'better graph and a wrong chapter. A larger one means something else in'
+                        'this gate is talking to Accounts while the subscription is open.'))
+                }
+                Write-Ok "each event cost Accounts exactly one entity fetch ($accountsDelta across $($writers.Count) writes on two subscriptions)"
             }
 
             # The rest of chapter 14, in the form newman can carry. Decision 43

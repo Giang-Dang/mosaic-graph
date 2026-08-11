@@ -2436,15 +2436,19 @@ everyone = set()
 for product in products:
     everyone |= authors_of(product)
 
-free = sorted(everyone - taken)
-print("%s\t%s" % (target["id"], free[0]) if free else "")
+# Three writers rather than one, because chapter 14's finding is about what
+# happens per event rather than per subscription, and one event cannot tell
+# those two apart.
+free = sorted(everyone - taken)[:3]
+print("%s\t%s" % (target["id"], ",".join(free)) if free else "")
 PY
 )"
             subscription_pair="$(printf '%s' "$subscription_pair" | tr -d '\r')"
             subscription_product="$(printf '%s' "$subscription_pair" | cut -f1)"
-            subscription_customer="$(printf '%s' "$subscription_pair" | cut -f2)"
+            subscription_customers="$(printf '%s' "$subscription_pair" | cut -f2)"
+            subscription_writes="$(printf '%s' "$subscription_customers" | tr ',' '\n' | grep -c .)"
 
-            if [ -z "$subscription_product" ] || [ -z "$subscription_customer" ]; then
+            if [ -z "$subscription_product" ] || [ -z "$subscription_customers" ]; then
                 step_fail 'subscriptions' 'Every customer this gate can reach has already reviewed the first product,
 so there is no write left that the domain would accept. Mosaic has no root field
 listing customers, which is why this walks reviews to find one; a seed change
@@ -2452,11 +2456,18 @@ that gives the first product every reviewer breaks it. Chapter 19 owns giving
 the gate a deterministic route to a customer.'
             fi
 
+            # What Accounts has served so far. The chapter prints a table of
+            # these counts, and the claim in it is that opening a subscription
+            # costs Accounts nothing and every event costs it one _entities
+            # call. Both halves are asserted below, because a number this book
+            # prints has something that produces it again.
+            accounts_before="$(grep -c 'Mosaic\.RequestTimeline' "$(subgraph_log accounts)" 2>/dev/null || echo 0)"
+
             node "$SUBSCRIPTION_RUN" \
                 --router "$ROUTER_URL/graphql" \
                 --reviews "$MOSAIC_REVIEWS_URL/graphql" \
                 --product "$subscription_product" \
-                --customer "$subscription_customer"
+                --customer "$subscription_customers"
             if [ $? -ne 0 ]; then
                 step_fail 'subscriptions' 'scripts/subscription-run.mjs failed.
 Its output above says which of the checks failed. If only the event-driven half
@@ -2465,7 +2476,24 @@ events.providers.nats block in router/config.yaml and Reviews needs
 ConnectionStrings__Nats, and a Reviews that cannot reach the broker logs a
 warning per review rather than failing.'
             fi
-            step_ok 'one review, submitted through the router, arrived on both subscriptions'
+            step_ok "$subscription_writes reviews, submitted through the router, arrived on both subscriptions"
+
+            # The per-event cost, counted rather than asserted from a plan.
+            # Each write is answered on two subscriptions and each of those
+            # payloads selects author.displayName, which Reviews cannot answer,
+            # so Accounts serves one _entities call per delivery.
+            accounts_after="$(grep -c 'Mosaic\.RequestTimeline' "$(subgraph_log accounts)" 2>/dev/null || echo 0)"
+            accounts_delta=$((accounts_after - accounts_before))
+            expected_delta=$((subscription_writes * 2))
+            if [ "$accounts_delta" -ne "$expected_delta" ]; then
+                step_fail 'per-event cost' "Accounts served $accounts_delta requests across $subscription_writes writes; expected $expected_delta.
+Chapter 14 prints this as one entity fetch per event per subscription, and both
+subscriptions select author.displayName. A smaller number means the router
+started caching the author across events, which would be a better graph and a
+wrong chapter. A larger one means something else in this gate is talking to
+Accounts while the subscription is open."
+            fi
+            step_ok "each event cost Accounts exactly one entity fetch ($accounts_delta across $subscription_writes writes on two subscriptions)"
         fi
 
         # The rest of chapter 14, in the form newman can carry. Decision 43 is
