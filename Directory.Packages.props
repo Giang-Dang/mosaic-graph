@@ -32,6 +32,23 @@
     <!-- Chapter 7's federated-wire sample, and since chapter 12 all six real
          subgraphs. -->
     <PackageVersion Include="HotChocolate.ApolloFederation" Version="$(HotChocolateVersion)" />
+
+    <!-- Chapter 15, and the whole of that chapter's argument is in the fact
+         that this is a different package from the one above. It carries
+         [Authorize] and AddAuthorization(), which enforce inside this process
+         against ASP.NET Core policies and emit nothing a composer can read.
+         The federation directives a router enforces - [Authenticated],
+         [RequiresScopes] - come from HotChocolate.ApolloFederation instead.
+         Nothing generates either one from the other. -->
+    <PackageVersion Include="HotChocolate.AspNetCore.Authorization" Version="$(HotChocolateVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Chapter 15. Validating a bearer token inside a subgraph. Version band
+         matches the shared framework the services target rather than the
+         HotChocolate or EF Core pins, because this is an ASP.NET Core
+         component and rolls with .NET itself. -->
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
   </ItemGroup>
 
   <ItemGroup>

@@ -70,3 +70,97 @@ events:
     nats:
       - id: default
         url: "nats://host.docker.internal:4222"
+
+# Chapter 15. Who the caller is, and what that entitles them to. Two blocks,
+# because the router treats them as two questions and answering the first one
+# does not answer the second.
+#
+# authentication decides whether a token is genuine and, if so, which claims it
+# carries. It rejects nothing on its own: a request with no token, or with one
+# that fails validation, still reaches the graph, and arrives anonymous.
+authentication:
+  jwt:
+    jwks:
+      # A shared secret rather than a url, which is the one line a deployment
+      # changes. Cosmo will fetch and cache a JWKS document over HTTP when this
+      # is a `url:`, and everything below it stays the same. The secret form
+      # exists so that this repository starts with `docker compose up` and no
+      # identity provider, and it is why MOSAIC_JWT_SECRET reaches both the
+      # router and the seven services from one place in docker-compose.yml.
+      #
+      # ${...}, not {{.Env....}}. The router expands this file with Go's
+      # os.ExpandEnv, which knows $VAR and ${VAR} and nothing else. The
+      # template form reads like the one Cosmo's own documentation uses
+      # elsewhere and is a plain string as far as this file's schema is
+      # concerned, so writing it here starts a router whose signing key is the
+      # twenty-six characters "{{.Env.MOSAIC_JWT_SECRET}}". Every real token is
+      # then refused with `unauthorized`, HTTP 401, and no reason logged
+      # anywhere. The only trace is a startup warning about the secret being
+      # shorter than 32 characters, which is advice about key strength and
+      # says nothing about expansion.
+      - secret: "${MOSAIC_JWT_SECRET}"
+        symmetric_algorithm: HS256
+
+        # Not optional, and the router will not start without it. The schema
+        # this file is validated against declares the two jwks shapes as a
+        # oneOf: the url branch forbids all three of these keys, and the secret
+        # branch requires all three of them and forbids `algorithms`,
+        # `refresh_interval` and `refresh_unknown_kid`. There is no middle.
+        #
+        # What it means downstream is easy to miss: this is the `kid` the
+        # router expects in the token's own header, so a token minted without
+        # one is rejected before any claim is read.
+        # scripts/mint-token.mjs writes the same string.
+        header_key_id: mosaic-dev
+
+    # Where in the token the router looks for scopes. `scope` is the default
+    # and is named here for the same reason log_level is: this file is meant to
+    # answer "which setting is in force" without a second document. RFC 8693
+    # writes this claim as a single space-separated string and the router
+    # accepts that as well as a list.
+    scope_claim: scope
+
+    # Both are defaults, both are named. header_value_prefix is the word before
+    # the token in the Authorization header, and setting it to "" is how a
+    # deployment behind a gateway that strips the word copes.
+    header_name: Authorization
+    header_value_prefix: Bearer
+
+# authorization is the second question, and its three keys are all false by
+# default. Mosaic leaves the first one false on purpose: this is a storefront,
+# and a graph that demands a token before it will list a product cannot serve a
+# browser. What is protected is protected per field, by @requiresScopes on the
+# one field that needs it.
+authorization:
+  # false: an anonymous request is allowed in and gets whatever anonymous is
+  # entitled to. Turn this on and the router answers 401 to every request with
+  # no token, before planning, and the graph becomes an internal one.
+  require_authentication: false
+
+  # false: a field the caller may not have is removed from the response and the
+  # rest of the query still answers. Turn this on and the whole operation fails
+  # instead. The chapter measures both, because the difference is a product
+  # decision rather than a security one - neither leaks the value.
+  reject_operation_if_unauthorized: false
+
+# Chapter 15. What the router passes on to a subgraph, which by default is
+# nothing at all. Chapter 7 measured that and read it as a fact about tracing
+# headers; it is the same rule here and it costs more.
+#
+# A field carrying HotChocolate's [Authorize] is enforced inside the subgraph,
+# against the token the subgraph validated. Without this block the subgraph
+# never sees a token, so such a field answers "not authorized" to a caller
+# holding a perfectly good one, and the client is told
+# "Failed to fetch from Subgraph 'accounts'" - which names neither
+# authentication nor the header that is missing.
+#
+# Propagating this one header is what makes subgraph-side rules usable. It also
+# hands every subgraph the caller's identity, which is a decision and not a
+# default: any of them can now act on claims the graph never declared, and
+# nothing composes or checks that. The chapter argues about which way round to
+# want it.
+headers:
+  all:
+    request:
+      - op: propagate
+        named: Authorization

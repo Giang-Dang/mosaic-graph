@@ -34,6 +34,16 @@
          each get this transitively from the Npgsql provider; this project has
          no provider and has to name it. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+
+    <!-- Chapter 15. Bearer-token validation is wired the same way in all six
+         services, so the wiring lives here; the key does not, and arrives
+         through configuration. HotChocolate.AspNetCore.Authorization is the
+         other half and is deliberately a different package from
+         HotChocolate.ApolloFederation above: one enforces inside this process,
+         the other emits directives a router enforces, and neither knows about
+         the other. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+    <PackageReference Include="HotChocolate.AspNetCore.Authorization" />
   </ItemGroup>
 
 </Project>

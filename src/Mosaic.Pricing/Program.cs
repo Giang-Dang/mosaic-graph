@@ -1,6 +1,7 @@
 using Mosaic.Pricing;
 using Mosaic.Pricing.Data;
 using Mosaic.ServiceDefaults;
+using Mosaic.ServiceDefaults.Auth;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -10,6 +11,10 @@ var builder = WebApplication.CreateBuilder(args);
 // them, which is why chapter 10 could measure the router from outside all three
 // processes and from inside exactly one.
 builder.Services.AddMosaicServiceDefaults();
+
+// Chapter 15. Every service validates the same tokens the same way; the
+// key arrives through configuration and lives in nobody's source file.
+builder.Services.AddMosaicJwtAuthentication(builder.Configuration);
 
 // Pricing's own database, on the PostgreSQL server all six services share. EF
 // Core creates it on first start, so docker-compose.yml gained a service and no

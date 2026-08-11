@@ -304,6 +304,16 @@ services:
       # in a startup warning, all of which chapter 21 is where we go looking
       # for a control plane.
       CONFIG_PATH: "/etc/mosaic-router/config.yaml"
+
+      # Chapter 15. The symmetric key the router verifies bearer tokens with,
+      # read by config.yaml as {{.Env.MOSAIC_JWT_SECRET}}. The same value
+      # reaches the seven services, which validate the same tokens, and
+      # scripts/mint-token.mjs, which signs them. One key in one place: three
+      # copies of a secret is three chances to rotate two of them.
+      #
+      # The default after :- is a development key and is meant to look like
+      # one. A deployment supplies the variable and never sees this branch.
+      MOSAIC_JWT_SECRET: "${MOSAIC_JWT_SECRET:-dev-secret-not-for-anything-real-0123456789}"
     volumes:
       # The composed graph, from chapter 9, and the router's own configuration.
       # Two mounts because the two files change for different reasons and at

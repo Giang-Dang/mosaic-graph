@@ -38,6 +38,31 @@ namespace Mosaic.Accounts.Model;
 public sealed record Customer(
     Guid Id,
     string DisplayName,
+
+    /// <summary>
+    /// The customer's email address, and the one field in this graph that is
+    /// nobody's business but theirs.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Chapter 15. <c>[RequiresScopes]</c> comes from
+    /// <c>HotChocolate.ApolloFederation</c> and its whole effect is on the
+    /// schema this service publishes: it puts
+    /// <c>@requiresScopes(scopes: [["read:pii"]])</c> on the field, the
+    /// composer copies that into the router's execution config, and the router
+    /// is what refuses. This process does not check it and cannot: ask Accounts
+    /// for an email directly, with no token at all, and it answers.
+    /// </para>
+    /// <para>
+    /// The attribute takes a flat <c>string[]</c> and the directive takes a
+    /// list of lists. One attribute is therefore one AND-group - every scope in
+    /// it is required - and the attribute is
+    /// <c>AllowMultiple</c>, so a second one beside it is the OR. That mapping
+    /// is nowhere in the attribute's own documentation and is worth knowing
+    /// before writing a rule that reads the other way round.
+    /// </para>
+    /// </remarks>
+    [property: RequiresScopes(["read:pii"])]
     string Email)
 {
     /// <summary>

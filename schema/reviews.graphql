@@ -135,6 +135,16 @@ input SubmitReviewInput {
   body: String
 }
 
+"Defines when a policy shall be executed."
+enum ApplyPolicy {
+  "Before the resolver was executed."
+  BEFORE_RESOLVER
+  "After the resolver was executed."
+  AFTER_RESOLVER
+  "The policy is applied in the validation step before the execution."
+  VALIDATION
+}
+
 "The `DateTime` scalar type represents a date and time with time zone offset information."
 scalar DateTime
   @specifiedBy(url: "https://scalars.graphql.org/chillicream/date-time.html")

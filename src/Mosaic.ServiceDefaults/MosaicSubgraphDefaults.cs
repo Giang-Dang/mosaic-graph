@@ -1,3 +1,4 @@
+using HotChocolate.Authorization;
 using HotChocolate.Execution.Configuration;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -104,6 +105,16 @@ public static class MosaicSubgraphDefaults
         => builder
             .AddApolloFederation()
             .AddGlobalObjectIdentification(registerNodeInterface)
+
+            // Chapter 15. This is what makes [Authorize] do anything: without
+            // it the attribute compiles, the schema builds, and every field
+            // carrying it answers to anybody. It is the second half of the
+            // authentication call in each Program.cs, and it enforces inside
+            // this process only - nothing it does reaches the schema this
+            // service publishes, so no composer and no router learns that any
+            // field here is protected.
+            .AddAuthorization()
+
             .ModifyCostOptions(options =>
             {
                 options.ApplyCostDefaults = false;
@@ -126,13 +137,31 @@ public static class MosaicSubgraphDefaults
         => services.AddPipelineReport();
 
     /// <summary>
-    /// The two lines every Mosaic service runs after building the application:
-    /// the lookup counter, and a health endpoint the compose file and both
-    /// verification scripts poll.
+    /// The lines every Mosaic service runs after building the application:
+    /// the lookup counter, the authentication pair, and a health endpoint the
+    /// compose file and both verification scripts poll.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Chapter 15 added the middle two, and their order is the whole reason
+    /// they are here rather than in seven copies. <c>UseAuthentication</c>
+    /// reads the token and puts a principal on the context;
+    /// <c>UseAuthorization</c> is what evaluates a policy against it. Reverse
+    /// them and every rule runs against an anonymous principal, which fails
+    /// closed and therefore looks like a policy bug rather than an ordering
+    /// bug.
+    /// </para>
+    /// <para>
+    /// Both run before <c>MapGraphQL</c> in each service, because a resolver
+    /// asking who the caller is has to be downstream of the thing that
+    /// decided.
+    /// </para>
+    /// </remarks>
     public static WebApplication UseMosaicServiceDefaults(this WebApplication app)
     {
         app.UseServiceCallCounting();
+        app.UseAuthentication();
+        app.UseAuthorization();
         app.MapGet("/health", () => Results.Ok("healthy"));
         return app;
     }

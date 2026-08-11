@@ -1,9 +1,14 @@
 using Mosaic.Nodes;
 using Mosaic.ServiceDefaults;
+using Mosaic.ServiceDefaults.Auth;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMosaicServiceDefaults();
+
+// Chapter 15. Every service validates the same tokens the same way; the
+// key arrives through configuration and lives in nobody's source file.
+builder.Services.AddMosaicJwtAuthentication(builder.Configuration);
 
 // No database, so no connection string, no DbContext factory and no seeder.
 // This is the only one of the seven services whose Program.cs has nothing

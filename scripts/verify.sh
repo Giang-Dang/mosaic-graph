@@ -110,6 +110,17 @@ MOSAIC_REVIEWS_URL="http://localhost:$MOSAIC_REVIEWS_SUBGRAPH_PORT"
 MOSAIC_ORDERING_URL="http://localhost:$ORDERING_PORT"
 MOSAIC_NODES_URL="http://localhost:$NODES_PORT"
 
+# Chapter 15. Every one of the seven subgraphs verifies a bearer token now, and
+# MosaicJwtDefaults throws at start-up naming this variable if it is missing.
+# docker-compose.yml defaults it for the router with the same value; a
+# subgraph started here as a host process gets no such default of its own, so
+# this is the one. Left alone if the caller already exported a value - which is
+# what lets a reader who wants to sign their own tokens outside this script
+# point every process at the same key. Exported, not just assigned, because it
+# has to reach every `dotnet run` and `node` child this script starts below.
+MOSAIC_JWT_SECRET="${MOSAIC_JWT_SECRET:-dev-secret-not-for-anything-real-0123456789}"
+export MOSAIC_JWT_SECRET
+
 # Kept for the steps that still name Catalog directly.
 CATALOG_SUBGRAPH_URL="$MOSAIC_CATALOG_URL"
 CATALOG_SCHEMA="$REPO_ROOT/schema/catalog.graphql"
@@ -181,7 +192,23 @@ NODES_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-nodes.local.postman_environment.jso
 REALTIME_CASES="$REPO_ROOT/scripts/realtime-cases.mjs"
 SUBSCRIPTION_RUN="$REPO_ROOT/scripts/subscription-run.mjs"
 REALTIME_POSTMAN="$REPO_ROOT/postman/mosaic-realtime.postman_collection.json"
+AUTH_POSTMAN="$REPO_ROOT/postman/mosaic-auth.postman_collection.json"
+AUTH_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-auth.local.postman_environment.json"
 REALTIME_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-realtime.local.postman_environment.json"
+
+# -- chapter 15's authorization -----------------------------------------------
+
+# Ten cases, and every one is a composition: @authorize and @requiresScopes are
+# HotChocolate's own directives rather than anything federation defines, and
+# what the composer does with them is settled before a service ever answers a
+# request. Same arrangement as composition-cases.mjs and the three after it.
+AUTH_CASES="$REPO_ROOT/scripts/auth-cases.mjs"
+
+# The other half of chapter 15, and the only one of these tools that produces
+# something rather than checking something: a bearer token, signed with the
+# same key the router and all seven services verify against. Used below to
+# mint the four tokens the router section asks for.
+MINT_TOKEN="$REPO_ROOT/scripts/mint-token.mjs"
 
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
@@ -264,6 +291,7 @@ subgraph_url() {
         accounts)  printf '%s' "$MOSAIC_ACCOUNTS_URL" ;;
         reviews)   printf '%s' "$MOSAIC_REVIEWS_URL" ;;
         ordering)  printf '%s' "$MOSAIC_ORDERING_URL" ;;
+        nodes)     printf '%s' "$MOSAIC_NODES_URL" ;;
     esac
 }
 
@@ -329,12 +357,21 @@ CATALOG_ENTITIES_QUERY='query($representations: [_Any!]!) { _entities(representa
 # AddApolloFederation() did not touch it. Chapter 8 asserts that in prose, so
 # this list staying at thirteen is part of chapter 8's evidence as well as
 # chapter 3's.
+#
+# Chapter 15 is the first thing since to touch it. AddMosaicSubgraph calls
+# .AddAuthorization() now, for @authorize and @requiresScopes, and HotChocolate
+# wires that up as two more pipeline steps of its own rather than folding
+# either into an existing one: PrepareAuthorization reads the directives off
+# the request before validation, AuthorizeRequest evaluates them after. Fifteen
+# now, not thirteen, and this is the list chapter 15 prints in its place.
 EXPECTED_PIPELINE="InstrumentationMiddleware
 ExceptionMiddleware
 TimeoutMiddleware
 DocumentCacheMiddleware
 DocumentParserMiddleware
+HotChocolate.Authorization.Pipeline.PrepareAuthorization
 DocumentValidationMiddleware
+HotChocolate.Authorization.Pipeline.AuthorizeRequest
 CostAnalyzerMiddleware
 OperationCacheMiddleware
 OperationResolverMiddleware
@@ -770,6 +807,225 @@ $(cat "$3" 2>/dev/null)"
 
 $(cat "$3" 2>/dev/null)"
     fi
+}
+
+# Posts a prepared request body to the router with an optional bearer token
+# ($3), writing the answer to $2 and printing the HTTP status. Unlike
+# post_graphql above, neither a non-200 status nor an errors key is a failure
+# here by itself - chapter 15's authorization steps below assert one or the
+# other of those on purpose, case by case.
+invoke_auth_gql() {
+    local request_file="$1"
+    local response_file="$2"
+    local token="${3:-}"
+
+    if [ -n "$token" ]; then
+        curl -sS -o "$response_file" -w '%{http_code}' \
+            --max-time 60 \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            -H "Authorization: Bearer $token" \
+            --data-binary "@$request_file" \
+            "$ROUTER_URL/graphql"
+    else
+        curl -sS -o "$response_file" -w '%{http_code}' \
+            --max-time 60 \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            --data-binary "@$request_file" \
+            "$ROUTER_URL/graphql"
+    fi
+}
+
+# Mints a token with scripts/mint-token.mjs and prints it. $1 the step a
+# failure is reported under, the rest passed straight through to mint-token.mjs
+# as its own arguments (e.g. --scope "read:pii").
+get_mosaic_token() {
+    local step="$1"
+    local token
+    shift
+
+    token="$(node "$MINT_TOKEN" "$@" 2>"$TEMP_DIR/mint-token.stderr")"
+    if [ $? -ne 0 ]; then
+        step_fail "$step" "node scripts/mint-token.mjs exited with a non-zero status and printed no token.
+
+$(cat "$TEMP_DIR/mint-token.stderr" 2>/dev/null)"
+    fi
+
+    token="$(printf '%s' "$token" | tr -d '\r\n')"
+    if [ -z "$token" ]; then
+        step_fail "$step" "node scripts/mint-token.mjs printed no token.
+
+$(cat "$TEMP_DIR/mint-token.stderr" 2>/dev/null)"
+    fi
+    printf '%s' "$token"
+}
+
+# Counts the entries in a GraphQL answer's top-level errors array whose
+# message contains $2 (empty string matches every message) and whose
+# extensions.code equals $3 (empty string matches every code, including no
+# code at all). Used both to require an error shaped a particular way and, for
+# the scoped-token case, to require zero of a shape that would otherwise be
+# invisible among errors this chapter has nothing to do with.
+count_matching_errors() {
+    local file="$1"
+    local needle="$2"
+    local code="$3"
+
+    if [ "$JSON_TOOL" = "jq" ]; then
+        jq -r --arg needle "$needle" --arg code "$code" '
+            [ (.errors // [])[]
+              | select($needle == "" or ((.message // "") | contains($needle)))
+              | select($code == "" or ((.extensions.code // "") == $code))
+            ] | length' "$file"
+        return $?
+    fi
+
+    python3 - "$file" "$needle" "$code" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+needle, code = sys.argv[2], sys.argv[3]
+count = 0
+for error in payload.get("errors") or []:
+    if needle and needle not in (error.get("message") or ""):
+        continue
+    extensions = error.get("extensions") or {}
+    if code and extensions.get("code") != code:
+        continue
+    count += 1
+
+print(count)
+PY
+}
+
+# Prints 1 when the authorization query's first product's first review author
+# is null, 0 otherwise. Customer.email is non-null and can be denied, so a
+# denial has nowhere to stop but the object that carries it.
+first_review_author_is_null() {
+    if [ "$JSON_TOOL" = "jq" ]; then
+        jq -r 'if ((.data.products[0].reviews.edges[0].node.author) // null) == null then 1 else 0 end' "$1"
+        return $?
+    fi
+
+    python3 - "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+try:
+    author = payload["data"]["products"][0]["reviews"]["edges"][0]["node"]["author"]
+except (KeyError, IndexError, TypeError):
+    author = None
+
+print(1 if author is None else 0)
+PY
+}
+
+# Prints the same first review author's email, or nothing if there is none.
+first_review_author_email() {
+    if [ "$JSON_TOOL" = "jq" ]; then
+        jq -r '(.data.products[0].reviews.edges[0].node.author.email) // ""' "$1"
+        return $?
+    fi
+
+    python3 - "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+try:
+    author = payload["data"]["products"][0]["reviews"]["edges"][0]["node"]["author"]
+except (KeyError, IndexError, TypeError):
+    author = None
+
+print((author or {}).get("email") or "")
+PY
+}
+
+# Prints 1 when $1's body is exactly {"errors":[{"message":"unauthorized"}]} -
+# not a superset of it, the exact shape Cosmo Router answers an expired token
+# with, before it ever plans a request.
+is_exact_unauthorized_body() {
+    if [ "$JSON_TOOL" = "jq" ]; then
+        if jq -e '
+            (keys == ["errors"]) and
+            (.errors | length == 1) and
+            (.errors[0] | keys == ["message"]) and
+            (.errors[0].message == "unauthorized")
+        ' "$1" >/dev/null 2>&1; then
+            printf '1'
+        else
+            printf '0'
+        fi
+        return 0
+    fi
+
+    python3 - "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+ok = (
+    list(payload.keys()) == ["errors"]
+    and len(payload["errors"]) == 1
+    and list(payload["errors"][0].keys()) == ["message"]
+    and payload["errors"][0]["message"] == "unauthorized"
+)
+print(1 if ok else 0)
+PY
+}
+
+# Prints customerById's displayName, or nothing if there is none.
+customer_display_name() {
+    if [ "$JSON_TOOL" = "jq" ]; then
+        jq -r '(.data.customerById.displayName) // ""' "$1"
+        return $?
+    fi
+
+    python3 - "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+print(((payload.get("data") or {}).get("customerById") or {}).get("displayName") or "")
+PY
+}
+
+# Prints "<inner_error_count> <has_auth_not_authenticated>", space separated.
+# An inner error is what a subgraph's own GraphQL error looks like once the
+# router has wrapped it: each outer error can carry extensions.errors, an
+# array of the subgraph's own response.
+inner_error_codes_summary() {
+    if [ "$JSON_TOOL" = "jq" ]; then
+        jq -r '
+            [ (.errors // [])[] | (.extensions.errors // [])[] ] as $inner
+            | [ ($inner | length),
+                (if ([$inner[] | (.extensions.code // "")] | index("AUTH_NOT_AUTHENTICATED")) != null then 1 else 0 end)
+              ] | @tsv' "$1"
+        return $?
+    fi
+
+    python3 - "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+inner = []
+for error in payload.get("errors") or []:
+    extensions = error.get("extensions") or {}
+    inner.extend(extensions.get("errors") or [])
+
+codes = [(sub.get("extensions") or {}).get("code") for sub in inner]
+print("%d\t%d" % (len(inner), 1 if "AUTH_NOT_AUTHENTICATED" in codes else 0))
+PY
 }
 
 # The tail of one subgraph's log. Takes the subgraph's name since chapter 12,
@@ -1662,7 +1918,7 @@ $LOGGED_PIPELINE
 The order is the spine of chapter 3. Do not reorder it to make this pass; work
 out what moved and why."
 fi
-step_ok 'request pipeline is the expected 13 middleware, in order'
+step_ok 'request pipeline is the expected 15 middleware, in order'
 
 # -- 6c. the request timeline -----------------------------------------------
 
@@ -1940,6 +2196,35 @@ chapter argues for pinning it and the default is the protocol Apollo deprecated
 in 2019.'
         fi
         step_ok 'the eight subscription-transport behaviours chapter 14 prints are the ones wgc produces'
+    fi
+
+    # -- 8b5. the authorization directives, which is chapter 15's subject ---
+
+    # Ten cases, and none of them needs a service running either: what
+    # @authorize and @requiresScopes become is decided at composition time,
+    # the same way chapter 12's @override and chapter 13's modelling problems
+    # are. @authorize is dropped from the client schema with no message at
+    # either severity; @requiresScopes survives, but drags ApplyPolicy - an
+    # enum that exists only to satisfy a HotChocolate attribute - into the
+    # public schema, and its scopes land in engineConfig.fieldConfigurations,
+    # which is the only place the router actually reads them back out of.
+    if [ ! -f "$AUTH_CASES" ]; then
+        step_skip 'auth cases' 'scripts/auth-cases.mjs does not exist yet'
+    elif ! command -v node >/dev/null 2>&1; then
+        step_fail 'auth cases' 'node is not on PATH; it is needed to run scripts/auth-cases.mjs.'
+    else
+        node "$AUTH_CASES"
+        if [ $? -ne 0 ]; then
+            step_fail 'auth cases' 'scripts/auth-cases.mjs failed.
+One of the authorization behaviours chapter 15 describes has changed. The
+output above says which case and how. Two are worth reading before assuming
+the case is at fault: the flat scopes list that crashes the composer with a
+TypeError rather than a validation error, and the @policy directive that
+composes clean only because nothing imports it - wgc registers @authorize and
+@requiresScopes unconditionally and consults no @link import list to learn
+either one.'
+        fi
+        step_ok 'the ten authorization behaviours chapter 15 prints are the ones wgc produces'
     fi
 
     # -- 8c. chapter 10: a router in front of the seven ---------------------
@@ -2530,6 +2815,227 @@ already reviewed the first product, which the first request in the collection
 goes looking for.'
             fi
             step_ok 'the realtime collection passes against the router'
+        fi
+
+        # -- 8h. chapter 15: authorization at the router ---------------------
+
+        # The four answers chapter 15 prints, asked of the running router
+        # rather than composed out of a schema file: @requiresScopes is
+        # enforced per request, not at composition time, which is what step
+        # 8b5 above already covers. No token gets a null author and a message
+        # naming the reason: not authenticated. A token scoped read:pii gets
+        # the email. A token with no scope gets the same null author and a
+        # different reason: missing required scopes. An expired token never
+        # reaches field evaluation at all - the router answers 401 before it
+        # plans anything.
+        #
+        # Then two more, for the header rule beside it. accounts enforces
+        # @authorize itself, against whatever token it is handed, and
+        # router/config.yaml's headers block is the only reason it is handed
+        # one at all: without it, customerById fails for a caller holding a
+        # perfectly good token exactly as it fails for a caller holding none.
+        AUTHORIZATION_QUERY='{ products { title reviews { edges { node { author { displayName email } } } } } }'
+        CUSTOMER_BY_ID_QUERY='{ customerById(id: \"Q3VzdG9tZXI6AAAAwAAAAECAAAAAAAAABA==\") { displayName } }'
+
+        printf '{"query":"%s"}' "$AUTHORIZATION_QUERY" > "$TEMP_DIR/authorization-query.json"
+        printf '{"query":"%s"}' "$CUSTOMER_BY_ID_QUERY" > "$TEMP_DIR/customer-by-id-query.json"
+
+        # -- no token: a null author and the reason why -----------------
+
+        no_token_status="$(invoke_auth_gql "$TEMP_DIR/authorization-query.json" "$TEMP_DIR/auth-no-token.json" '')"
+        if [ "$no_token_status" != "200" ]; then
+            step_fail 'unauthenticated read' "Expected HTTP 200 with no Authorization header, got $no_token_status.
+$(cat "$TEMP_DIR/auth-no-token.json" 2>/dev/null)"
+        fi
+        if [ "$(response_has_errors "$TEMP_DIR/auth-no-token.json" 2>/dev/null)" != "1" ]; then
+            step_fail 'unauthenticated read' "Expected an errors key: Customer.email carries @requiresScopes, and
+requiresAuthentication is checked before a scope ever is, so a request with no
+token at all fails it before an unscoped token would.
+
+$(cat "$TEMP_DIR/auth-no-token.json" 2>/dev/null)"
+        fi
+        not_authenticated_count="$(count_matching_errors "$TEMP_DIR/auth-no-token.json" 'Reason: not authenticated.' 'UNAUTHORIZED_FIELD_OR_TYPE')"
+        if [ "$not_authenticated_count" -eq 0 ]; then
+            step_fail 'unauthenticated read' "Expected an error whose message contains \"Reason: not authenticated.\"
+and whose extensions.code is UNAUTHORIZED_FIELD_OR_TYPE. Got:
+
+$(cat "$TEMP_DIR/auth-no-token.json" 2>/dev/null)"
+        fi
+        if [ "$(first_review_author_is_null "$TEMP_DIR/auth-no-token.json")" != "1" ]; then
+            step_fail 'unauthenticated read' "Expected the first product's first review author to be null: email is
+non-null and denied, so the null it resolves to has nowhere to stop but author.
+
+$(cat "$TEMP_DIR/auth-no-token.json" 2>/dev/null)"
+        fi
+        step_ok 'with no Authorization header: a null author, "Reason: not authenticated.", UNAUTHORIZED_FIELD_OR_TYPE'
+
+        # -- a token scoped read:pii: the email itself -------------------
+
+        pii_token="$(get_mosaic_token 'authenticated read, scoped' --scope 'read:pii')"
+        pii_status="$(invoke_auth_gql "$TEMP_DIR/authorization-query.json" "$TEMP_DIR/auth-pii.json" "$pii_token")"
+        if [ "$pii_status" != "200" ]; then
+            step_fail 'authenticated read, scoped' "Expected HTTP 200 with a read:pii token, got $pii_status.
+$(cat "$TEMP_DIR/auth-pii.json" 2>/dev/null)"
+        fi
+        # Asserted as "no authorization error", not as "no errors". The graph
+        # reaches every review's author, and the subscription step earlier in
+        # this run submits a review against a customer key that was never
+        # seeded, so one author resolves to null for a reason that has nothing
+        # to do with this chapter. Chapter 12's decision 66 met the same trap
+        # from the other side and stopped a count short of Product.reviews for
+        # it. Asserting "no errors" here would be asserting a fact about a
+        # database nothing had written to.
+        pii_auth_error_count="$(count_matching_errors "$TEMP_DIR/auth-pii.json" '' 'UNAUTHORIZED_FIELD_OR_TYPE')"
+        if [ "$pii_auth_error_count" -ne 0 ]; then
+            step_fail 'authenticated read, scoped' "Expected no UNAUTHORIZED_FIELD_OR_TYPE error with a valid read:pii token.
+
+$(cat "$TEMP_DIR/auth-pii.json" 2>/dev/null)"
+        fi
+        pii_author_email="$(first_review_author_email "$TEMP_DIR/auth-pii.json")"
+        if [ -z "$pii_author_email" ]; then
+            step_fail 'authenticated read, scoped' "Expected the first review author to carry a non-empty email.
+
+$(cat "$TEMP_DIR/auth-pii.json" 2>/dev/null)"
+        fi
+        step_ok "a token scoped read:pii reads Customer.email, and no field is refused ($pii_author_email)"
+
+        # -- a token with no scope: authenticated, still refused ---------
+
+        no_scope_token="$(get_mosaic_token 'authenticated read, unscoped')"
+        no_scope_status="$(invoke_auth_gql "$TEMP_DIR/authorization-query.json" "$TEMP_DIR/auth-no-scope.json" "$no_scope_token")"
+        if [ "$no_scope_status" != "200" ]; then
+            step_fail 'authenticated read, unscoped' "Expected HTTP 200 with an unscoped token, got $no_scope_status.
+$(cat "$TEMP_DIR/auth-no-scope.json" 2>/dev/null)"
+        fi
+        if [ "$(response_has_errors "$TEMP_DIR/auth-no-scope.json" 2>/dev/null)" != "1" ]; then
+            step_fail 'authenticated read, unscoped' "Expected an errors key: the token is valid but carries no scope, and
+Customer.email requires read:pii.
+
+$(cat "$TEMP_DIR/auth-no-scope.json" 2>/dev/null)"
+        fi
+        missing_scope_count="$(count_matching_errors "$TEMP_DIR/auth-no-scope.json" 'Reason: missing required scopes.' '')"
+        if [ "$missing_scope_count" -eq 0 ]; then
+            step_fail 'authenticated read, unscoped' "Expected an error whose message contains \"Reason: missing required scopes.\"
+Got:
+
+$(cat "$TEMP_DIR/auth-no-scope.json" 2>/dev/null)"
+        fi
+        step_ok 'a token with no scope is authenticated but gets "Reason: missing required scopes."'
+
+        # -- an expired token: refused before a field is ever asked ------
+
+        expired_token="$(get_mosaic_token 'expired token' --expires-in -60)"
+        expired_status="$(invoke_auth_gql "$TEMP_DIR/authorization-query.json" "$TEMP_DIR/auth-expired.json" "$expired_token")"
+        if [ "$expired_status" != "401" ]; then
+            step_fail 'expired token' "Expected HTTP 401 for an expired token, got $expired_status.
+$(cat "$TEMP_DIR/auth-expired.json" 2>/dev/null)"
+        fi
+        if [ "$(is_exact_unauthorized_body "$TEMP_DIR/auth-expired.json")" != "1" ]; then
+            step_fail 'expired token' "Expected the body to be exactly {\"errors\":[{\"message\":\"unauthorized\"}]}.
+Got: $(cat "$TEMP_DIR/auth-expired.json" 2>/dev/null)"
+        fi
+        step_ok 'an expired token gets HTTP 401 and {"errors":[{"message":"unauthorized"}]}'
+
+        # -- the header rule: what a propagated token buys ----------------
+
+        any_token="$(get_mosaic_token 'authorization header propagates')"
+        with_token_status="$(invoke_auth_gql "$TEMP_DIR/customer-by-id-query.json" "$TEMP_DIR/customer-with-token.json" "$any_token")"
+        if [ "$with_token_status" != "200" ]; then
+            step_fail 'authorization header propagates' "Expected HTTP 200 for customerById with a valid token, got $with_token_status.
+$(cat "$TEMP_DIR/customer-with-token.json" 2>/dev/null)"
+        fi
+        if [ "$(response_has_errors "$TEMP_DIR/customer-with-token.json" 2>/dev/null)" = "1" ]; then
+            step_fail 'authorization header propagates' "Expected customerById to succeed for a caller carrying any valid token:
+@authorize on Query.customerById asks only whether the caller is
+authenticated, which accounts can answer for itself only because
+router/config.yaml's headers block propagates Authorization to it.
+
+$(cat "$TEMP_DIR/customer-with-token.json" 2>/dev/null)"
+        fi
+        customer_display_name_value="$(customer_display_name "$TEMP_DIR/customer-with-token.json")"
+        if [ -z "$customer_display_name_value" ]; then
+            step_fail 'authorization header propagates' "Expected a non-empty displayName from customerById with a valid token.
+
+$(cat "$TEMP_DIR/customer-with-token.json" 2>/dev/null)"
+        fi
+        step_ok "with Authorization propagated, customerById answers \"$customer_display_name_value\" for any valid token"
+
+        # -- the same header, withheld: what its absence costs -------------
+
+        no_token_customer_status="$(invoke_auth_gql "$TEMP_DIR/customer-by-id-query.json" "$TEMP_DIR/customer-no-token.json" '')"
+        if [ "$no_token_customer_status" != "200" ]; then
+            step_fail 'authorization header absence' "Expected HTTP 200 (the failure travels inside the errors array) with no token, got $no_token_customer_status.
+$(cat "$TEMP_DIR/customer-no-token.json" 2>/dev/null)"
+        fi
+        if [ "$(response_has_errors "$TEMP_DIR/customer-no-token.json" 2>/dev/null)" != "1" ]; then
+            step_fail 'authorization header absence' "Expected customerById to fail with no Authorization header: nothing in
+this request carries one, so accounts has no token to check @authorize
+against.
+
+$(cat "$TEMP_DIR/customer-no-token.json" 2>/dev/null)"
+        fi
+        mentions_accounts_count="$(count_matching_errors "$TEMP_DIR/customer-no-token.json" 'accounts' '')"
+        if [ "$mentions_accounts_count" -eq 0 ]; then
+            step_fail 'authorization header absence' "Expected an error naming the accounts subgraph.
+Got:
+
+$(cat "$TEMP_DIR/customer-no-token.json" 2>/dev/null)"
+        fi
+        read -r inner_error_count has_auth_not_authenticated <<< "$(inner_error_codes_summary "$TEMP_DIR/customer-no-token.json")"
+        if [ "$inner_error_count" -gt 0 ] && [ "$has_auth_not_authenticated" != "1" ]; then
+            step_fail 'authorization header absence' "Reached an inner error code and it was not AUTH_NOT_AUTHENTICATED.
+Got:
+
+$(cat "$TEMP_DIR/customer-no-token.json" 2>/dev/null)"
+        fi
+        step_ok 'with no Authorization header, customerById fails naming the accounts subgraph'
+
+        # -- chapter 15: the same four answers, in Postman -----------------------
+
+        # Decision 13 keeps Postman first-class and every hands-on chapter ships a
+        # collection. This one carries what a request and a response can carry,
+        # which here is all of it: the four callers, and the two ends of the header
+        # rule.
+        #
+        # The three tokens go in as environment variables rather than being minted
+        # inside the collection, because signing needs the key and a Postman
+        # collection is not where a key belongs.
+        if [ ! -f "$AUTH_POSTMAN" ] || [ ! -f "$AUTH_POSTMAN_ENV" ]; then
+            step_skip 'auth postman' 'the auth collection or its environment is missing from postman/'
+        else
+            postman_scoped="$(node "$MINT_TOKEN" --scope "read:pii")"
+            postman_plain="$(node "$MINT_TOKEN")"
+            postman_expired="$(node "$MINT_TOKEN" --expires-in -60)"
+            if [ -z "$postman_scoped" ] || [ -z "$postman_plain" ] || [ -z "$postman_expired" ]; then
+                step_fail 'auth postman' 'node scripts/mint-token.mjs exited without printing a token.'
+            fi
+            if [ "$NEWMAN_BIN" = "npx" ]; then
+                "$NEWMAN_BIN" --no newman run "$AUTH_POSTMAN" \
+                    --environment "$AUTH_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --env-var "accountsUrl=$MOSAIC_ACCOUNTS_URL" \
+                    --env-var "scopedToken=$postman_scoped" \
+                    --env-var "plainToken=$postman_plain" \
+                    --env-var "expiredToken=$postman_expired" \
+                    --bail
+            else
+                "$NEWMAN_BIN" run "$AUTH_POSTMAN" \
+                    --environment "$AUTH_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --env-var "accountsUrl=$MOSAIC_ACCOUNTS_URL" \
+                    --env-var "scopedToken=$postman_scoped" \
+                    --env-var "plainToken=$postman_plain" \
+                    --env-var "expiredToken=$postman_expired" \
+                    --bail
+            fi
+            if [ $? -ne 0 ]; then
+                step_fail 'auth postman' "newman exited non-zero; its output above says which request failed.
+        The scoped request asserts that no field was refused rather than that the
+        response has no errors: a run of this script submits a review whose author was
+        never seeded, so one author is null for a reason no token could fix. See
+        decision 98."
+            fi
+            step_ok 'the auth collection passes against the router'
         fi
 
         # Down rather than stop, and now rather than in the trap, because the

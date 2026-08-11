@@ -235,7 +235,23 @@ $NodesPostmanEnv    = Join-Path $RepoRoot 'postman' 'mosaic-nodes.local.postman_
 $RealtimeCases      = Join-Path $RepoRoot 'scripts' 'realtime-cases.mjs'
 $SubscriptionRun    = Join-Path $RepoRoot 'scripts' 'subscription-run.mjs'
 $RealtimePostman    = Join-Path $RepoRoot 'postman' 'mosaic-realtime.postman_collection.json'
+$AuthPostman        = Join-Path $RepoRoot 'postman' 'mosaic-auth.postman_collection.json'
+$AuthPostmanEnv     = Join-Path $RepoRoot 'postman' 'mosaic-auth.local.postman_environment.json'
 $RealtimePostmanEnv = Join-Path $RepoRoot 'postman' 'mosaic-realtime.local.postman_environment.json'
+
+# -- chapter 15's authorization -----------------------------------------------
+
+# Ten cases, and every one is a composition: @authorize and @requiresScopes are
+# HotChocolate's own directives rather than anything federation defines, and
+# what the composer does with them is settled before a service ever answers a
+# request. Same arrangement as composition-cases.mjs and the three after it.
+$AuthCases = Join-Path $RepoRoot 'scripts' 'auth-cases.mjs'
+
+# The other half of chapter 15, and the only one of these tools that produces
+# something rather than checking something: a bearer token, signed with the
+# same key the router and all seven services verify against. Used below to
+# mint the four tokens the router section asks for.
+$MintToken = Join-Path $RepoRoot 'scripts' 'mint-token.mjs'
 
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
@@ -443,13 +459,22 @@ $SplitBatchAllowance = 1
 # AddApolloFederation() did not touch it. Chapter 8 asserts that in prose, so
 # this list staying at thirteen is part of chapter 8's evidence as well as
 # chapter 3's.
+#
+# Chapter 15 is the first thing since to touch it. AddMosaicSubgraph calls
+# .AddAuthorization() now, for @authorize and @requiresScopes, and HotChocolate
+# wires that up as two more pipeline steps of its own rather than folding
+# either into an existing one: PrepareAuthorization reads the directives off
+# the request before validation, AuthorizeRequest evaluates them after. Fifteen
+# now, not thirteen, and this is the list chapter 15 prints in its place.
 $ExpectedPipeline = @(
     'InstrumentationMiddleware'
     'ExceptionMiddleware'
     'TimeoutMiddleware'
     'DocumentCacheMiddleware'
     'DocumentParserMiddleware'
+    'HotChocolate.Authorization.Pipeline.PrepareAuthorization'
     'DocumentValidationMiddleware'
+    'HotChocolate.Authorization.Pipeline.AuthorizeRequest'
     'CostAnalyzerMiddleware'
     'OperationCacheMiddleware'
     'OperationResolverMiddleware'
@@ -638,6 +663,8 @@ $previousAspNetCoreEnvironment = $env:ASPNETCORE_ENVIRONMENT
 $aspNetCoreEnvironmentWasSet = $null -ne $previousAspNetCoreEnvironment
 $previousResetDatabase = $env:MOSAIC_RESET_DATABASE
 $resetDatabaseWasSet = $null -ne $previousResetDatabase
+$previousJwtSecret = $env:MOSAIC_JWT_SECRET
+$jwtSecretWasSet = $null -ne $previousJwtSecret
 $exitCode = 0
 
 Write-Host "mosaic verify - $RepoRoot"
@@ -971,6 +998,17 @@ try {
     # One variable resets all six of the services that have a database, which is the whole reason every seeder spells
     # it the same way.
     $env:MOSAIC_RESET_DATABASE = '1'
+
+    # Chapter 15. Every one of the seven subgraphs verifies a bearer token now,
+    # and MosaicJwtDefaults throws at start-up naming this variable if it is
+    # missing. docker-compose.yml defaults it for the router with the same
+    # value; a subgraph started here as a host process gets no such default of
+    # its own, so this is the one. Left alone if the caller already exported
+    # a value - which is what lets a reader who wants to sign their own tokens
+    # outside this script point every process at the same key.
+    if (-not $env:MOSAIC_JWT_SECRET) {
+        $env:MOSAIC_JWT_SECRET = 'dev-secret-not-for-anything-real-0123456789'
+    }
 
     # One at a time rather than all seven at once, because each of them creates and
     # seeds a database on the way up and doing that in sequence makes a failure
@@ -1727,6 +1765,37 @@ try {
             Write-Ok 'the eight subscription-transport behaviours chapter 14 prints are the ones wgc produces'
         }
 
+        # -- 8b5. the authorization directives, which is chapter 15's subject -
+
+        # Ten cases, and none of them needs a service running either: what
+        # @authorize and @requiresScopes become is decided at composition
+        # time, the same way chapter 12's @override and chapter 13's modelling
+        # problems are. @authorize is dropped from the client schema with no
+        # message at either severity; @requiresScopes survives, but drags
+        # ApplyPolicy - an enum that exists only to satisfy a HotChocolate
+        # attribute - into the public schema, and its scopes land in
+        # engineConfig.fieldConfigurations, which is the only place the router
+        # actually reads them back out of.
+        if (-not (Test-Path -LiteralPath $AuthCases)) {
+            Write-Skipped 'auth cases' 'scripts/auth-cases.mjs does not exist yet'
+        } elseif (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+            Stop-Verify 'auth cases' 'node is not on PATH; it is needed to run scripts/auth-cases.mjs.'
+        } else {
+            & node $AuthCases
+            if ($LASTEXITCODE -ne 0) {
+                Stop-Verify 'auth cases' (Join-Lines @(
+                    "scripts/auth-cases.mjs exited with $LASTEXITCODE."
+                    'One of the authorization behaviours chapter 15 describes has changed.'
+                    'The output above says which case and how. Two are worth reading before'
+                    'assuming the case is at fault: the flat scopes list that crashes the'
+                    'composer with a TypeError rather than a validation error, and the'
+                    '@policy directive that composes clean only because nothing imports it -'
+                    'wgc registers @authorize and @requiresScopes unconditionally and consults'
+                    'no @link import list to learn either one.'))
+            }
+            Write-Ok 'the ten authorization behaviours chapter 15 prints are the ones wgc produces'
+        }
+
         # -- 8c. chapter 10: a router in front of the two ---------------------
 
         # The first section that asks the graph a question rather than asking a
@@ -2244,6 +2313,260 @@ try {
                 Write-Ok 'the realtime collection passes against the router'
             }
 
+            # -- 8h. chapter 15: authorization at the router ---------------------
+
+            # The four answers chapter 15 prints, asked of the running router
+            # rather than composed out of a schema file: @requiresScopes is
+            # enforced per request, not at composition time, which is what
+            # section 8b5 above already covers. No token gets a null author and
+            # a message naming the reason: not authenticated. A token scoped
+            # read:pii gets the email. A token with no scope gets the same null
+            # author and a different reason: missing required scopes. An
+            # expired token never reaches field evaluation at all - the router
+            # answers 401 before it plans anything.
+            #
+            # Then two more, for the header rule beside it. accounts enforces
+            # @authorize itself, against whatever token it is handed, and
+            # router/config.yaml's headers block is the only reason it is
+            # handed one at all: without it, customerById fails for a caller
+            # holding a perfectly good token exactly as it fails for a caller
+            # holding none.
+            $AuthorizationQuery =
+                '{ products { title reviews { edges { node { author { displayName email } } } } } }'
+            $CustomerByIdQuery =
+                '{ customerById(id: "Q3VzdG9tZXI6AAAAwAAAAECAAAAAAAAABA==") { displayName } }'
+
+            function Invoke-AuthGql {
+                param([string] $Query, [string] $Token)
+
+                $headers = @{ Accept = 'application/json' }
+                if ($Token) { $headers['Authorization'] = "Bearer $Token" }
+
+                $response = Invoke-WebRequest `
+                    -Uri "$MosaicRouterUrl/graphql" -Method Post -ContentType 'application/json' `
+                    -Headers $headers `
+                    -Body (@{ query = $Query } | ConvertTo-Json -Depth 5 -Compress) `
+                    -TimeoutSec 60 -SkipHttpErrorCheck
+
+                [PSCustomObject]@{
+                    Status = [int] $response.StatusCode
+                    Raw    = $response.Content
+                    Body   = ($response.Content | ConvertFrom-Json)
+                }
+            }
+
+            function Get-MosaicToken {
+                param([string] $Step, [string[]] $MintArgs = @())
+
+                $token = ((& node $MintToken @MintArgs) | Out-String).Trim()
+                if ($LASTEXITCODE -ne 0 -or -not $token) {
+                    Stop-Verify $Step "node scripts/mint-token.mjs exited with $LASTEXITCODE and printed no token."
+                }
+                return $token
+            }
+
+            # -- no token: a null author and the reason why ------------------
+
+            $noToken = Invoke-AuthGql -Query $AuthorizationQuery -Token $null
+            if ($noToken.Status -ne 200) {
+                Stop-Verify 'unauthenticated read' "Expected HTTP 200 with no Authorization header, got $($noToken.Status).`n$($noToken.Raw)"
+            }
+            if ($noToken.Body.PSObject.Properties.Name -notcontains 'errors') {
+                Stop-Verify 'unauthenticated read' (Join-Lines @(
+                    'Expected an errors key: Customer.email carries @requiresScopes, and'
+                    'requiresAuthentication is checked before a scope ever is, so a request'
+                    'with no token at all fails it before an unscoped token would.'
+                    $noToken.Raw))
+            }
+            $noTokenErrors = @($noToken.Body.errors)
+            $notAuthenticated = @($noTokenErrors | Where-Object {
+                $_.message -like '*Reason: not authenticated.*' -and $_.extensions.code -eq 'UNAUTHORIZED_FIELD_OR_TYPE'
+            })
+            if ($notAuthenticated.Count -eq 0) {
+                Stop-Verify 'unauthenticated read' (Join-Lines @(
+                    'Expected an error whose message contains "Reason: not authenticated."'
+                    'and whose extensions.code is UNAUTHORIZED_FIELD_OR_TYPE. Got:'
+                    ($noTokenErrors | ConvertTo-Json -Depth 10)))
+            }
+            $firstAuthorNoToken = $noToken.Body.data.products[0].reviews.edges[0].node.author
+            if ($null -ne $firstAuthorNoToken) {
+                Stop-Verify 'unauthenticated read' (Join-Lines @(
+                    "Expected the first product's first review author to be null: email is"
+                    'non-null and denied, so the null it resolves to has nowhere to stop but'
+                    'author.'
+                    "Got: $($firstAuthorNoToken | ConvertTo-Json -Compress)"))
+            }
+            Write-Ok 'with no Authorization header: a null author, "Reason: not authenticated.", UNAUTHORIZED_FIELD_OR_TYPE'
+
+            # -- a token scoped read:pii: the email itself --------------------
+
+            $piiToken = Get-MosaicToken -Step 'authenticated read, scoped' -MintArgs @('--scope', 'read:pii')
+            $piiResult = Invoke-AuthGql -Query $AuthorizationQuery -Token $piiToken
+            if ($piiResult.Status -ne 200) {
+                Stop-Verify 'authenticated read, scoped' "Expected HTTP 200 with a read:pii token, got $($piiResult.Status).`n$($piiResult.Raw)"
+            }
+            # Asserted as "no authorization error", not as "no errors". The
+            # graph reaches every review's author, and step 7 of this same run
+            # submits a review against a customer key that was never seeded, so
+            # one author resolves to null for a reason that has nothing to do
+            # with this chapter. Chapter 12's decision 66 met the same trap from
+            # the other side and stopped a count short of Product.reviews for it.
+            # Asserting "no errors" here would be asserting a fact about a
+            # database nothing had written to.
+            $piiAuthErrors = @(@($piiResult.Body.errors) | Where-Object {
+                $_.extensions.code -eq 'UNAUTHORIZED_FIELD_OR_TYPE' })
+            if ($piiAuthErrors.Count -ne 0) {
+                Stop-Verify 'authenticated read, scoped' (Join-Lines @(
+                    'Expected no UNAUTHORIZED_FIELD_OR_TYPE error with a valid read:pii token.'
+                    ($piiAuthErrors | ConvertTo-Json -Depth 10)))
+            }
+            $piiAuthor = $piiResult.Body.data.products[0].reviews.edges[0].node.author
+            if (-not $piiAuthor -or [string]::IsNullOrEmpty($piiAuthor.email)) {
+                Stop-Verify 'authenticated read, scoped' (Join-Lines @(
+                    'Expected the first review author to carry a non-empty email.'
+                    "Got: $($piiAuthor | ConvertTo-Json -Compress)"))
+            }
+            Write-Ok "a token scoped read:pii reads Customer.email, and no field is refused ($($piiAuthor.email))"
+
+            # -- a token with no scope: authenticated, still refused ----------
+
+            $noScopeToken = Get-MosaicToken -Step 'authenticated read, unscoped'
+            $noScopeResult = Invoke-AuthGql -Query $AuthorizationQuery -Token $noScopeToken
+            if ($noScopeResult.Status -ne 200) {
+                Stop-Verify 'authenticated read, unscoped' "Expected HTTP 200 with an unscoped token, got $($noScopeResult.Status).`n$($noScopeResult.Raw)"
+            }
+            if ($noScopeResult.Body.PSObject.Properties.Name -notcontains 'errors') {
+                Stop-Verify 'authenticated read, unscoped' (Join-Lines @(
+                    'Expected an errors key: the token is valid but carries no scope, and'
+                    'Customer.email requires read:pii.'
+                    $noScopeResult.Raw))
+            }
+            $missingScope = @(@($noScopeResult.Body.errors) | Where-Object { $_.message -like '*Reason: missing required scopes.*' })
+            if ($missingScope.Count -eq 0) {
+                Stop-Verify 'authenticated read, unscoped' (Join-Lines @(
+                    'Expected an error whose message contains "Reason: missing required scopes."'
+                    'Got:'
+                    (@($noScopeResult.Body.errors) | ConvertTo-Json -Depth 10)))
+            }
+            Write-Ok 'a token with no scope is authenticated but gets "Reason: missing required scopes."'
+
+            # -- an expired token: refused before a field is ever asked -------
+
+            $expiredToken = Get-MosaicToken -Step 'expired token' -MintArgs @('--expires-in', '-60')
+            $expiredResult = Invoke-AuthGql -Query $AuthorizationQuery -Token $expiredToken
+            if ($expiredResult.Status -ne 401) {
+                Stop-Verify 'expired token' "Expected HTTP 401 for an expired token, got $($expiredResult.Status).`n$($expiredResult.Raw)"
+            }
+            $expiredProps = @($expiredResult.Body.PSObject.Properties.Name)
+            $expiredErrors = @($expiredResult.Body.errors)
+            $expiredBodyIsExact = (
+                (($expiredProps -join ',') -eq 'errors') -and
+                ($expiredErrors.Count -eq 1) -and
+                ((@($expiredErrors[0].PSObject.Properties.Name) -join ',') -eq 'message') -and
+                ($expiredErrors[0].message -eq 'unauthorized'))
+            if (-not $expiredBodyIsExact) {
+                Stop-Verify 'expired token' (Join-Lines @(
+                    'Expected the body to be exactly {"errors":[{"message":"unauthorized"}]}.'
+                    "Got: $($expiredResult.Raw)"))
+            }
+            Write-Ok 'an expired token gets HTTP 401 and {"errors":[{"message":"unauthorized"}]}'
+
+            # -- the header rule: what a propagated token buys -----------------
+
+            $anyToken = Get-MosaicToken -Step 'authorization header propagates'
+            $customerWithToken = Invoke-AuthGql -Query $CustomerByIdQuery -Token $anyToken
+            if ($customerWithToken.Status -ne 200) {
+                Stop-Verify 'authorization header propagates' "Expected HTTP 200 for customerById with a valid token, got $($customerWithToken.Status).`n$($customerWithToken.Raw)"
+            }
+            if ($customerWithToken.Body.PSObject.Properties.Name -contains 'errors') {
+                Stop-Verify 'authorization header propagates' (Join-Lines @(
+                    'Expected customerById to succeed for a caller carrying any valid token:'
+                    '@authorize on Query.customerById asks only whether the caller is'
+                    'authenticated, which accounts can answer for itself only because'
+                    "router/config.yaml's headers block propagates Authorization to it."
+                    ($customerWithToken.Body.errors | ConvertTo-Json -Depth 10)))
+            }
+            $customerDisplayName = $customerWithToken.Body.data.customerById.displayName
+            if ([string]::IsNullOrEmpty($customerDisplayName)) {
+                Stop-Verify 'authorization header propagates' (Join-Lines @(
+                    'Expected a non-empty displayName from customerById with a valid token.'
+                    "Got: $($customerWithToken.Body.data | ConvertTo-Json -Compress)"))
+            }
+            Write-Ok "with Authorization propagated, customerById answers `"$customerDisplayName`" for any valid token"
+
+            # -- the same header, withheld: what its absence costs -------------
+
+            $customerNoToken = Invoke-AuthGql -Query $CustomerByIdQuery -Token $null
+            if ($customerNoToken.Status -ne 200) {
+                Stop-Verify 'authorization header absence' "Expected HTTP 200 (the failure travels inside the errors array) with no token, got $($customerNoToken.Status).`n$($customerNoToken.Raw)"
+            }
+            if ($customerNoToken.Body.PSObject.Properties.Name -notcontains 'errors') {
+                Stop-Verify 'authorization header absence' (Join-Lines @(
+                    'Expected customerById to fail with no Authorization header: nothing in'
+                    'this request carries one, so accounts has no token to check @authorize'
+                    'against.'
+                    $customerNoToken.Raw))
+            }
+            $customerErrors = @($customerNoToken.Body.errors)
+            $mentionsAccounts = @($customerErrors | Where-Object { $_.message -like '*accounts*' })
+            if ($mentionsAccounts.Count -eq 0) {
+                Stop-Verify 'authorization header absence' (Join-Lines @(
+                    'Expected an error naming the accounts subgraph.'
+                    'Got:'
+                    ($customerErrors | ConvertTo-Json -Depth 10)))
+            }
+            $innerAuthErrors = @($customerErrors |
+                Where-Object { $_.extensions -and $_.extensions.errors } |
+                ForEach-Object { $_.extensions.errors } |
+                Where-Object { $_ })
+            if ($innerAuthErrors.Count -gt 0) {
+                $innerCodes = @($innerAuthErrors | ForEach-Object { $_.extensions.code } | Where-Object { $_ })
+                if ($innerCodes -notcontains 'AUTH_NOT_AUTHENTICATED') {
+                    Stop-Verify 'authorization header absence' (Join-Lines @(
+                        'Reached an inner error code and it was not AUTH_NOT_AUTHENTICATED.'
+                        "Got: $($innerCodes -join ', ')"))
+                }
+            }
+            Write-Ok 'with no Authorization header, customerById fails naming the accounts subgraph'
+
+            # -- 8i. chapter 15: the same four answers, in Postman --------------
+
+            # Decision 13 keeps Postman first-class and every hands-on chapter
+            # ships a collection. This one carries what a request and a response
+            # can carry, which here is all of it: the four callers, and the two
+            # ends of the header rule.
+            #
+            # The three tokens go in as environment variables rather than being
+            # minted inside the collection, because signing needs the key and a
+            # Postman collection is not where a key belongs.
+            if (-not (Test-Path -LiteralPath $AuthPostman) -or -not (Test-Path -LiteralPath $AuthPostmanEnv)) {
+                Write-Skipped 'auth postman' 'the auth collection or its environment is missing from postman/'
+            } elseif (-not $newmanCommand) {
+                Write-Skipped 'auth postman' 'newman is not installed - run npm install first'
+            } else {
+                $postmanScoped  = Get-MosaicToken -Step 'auth postman' -MintArgs @('--scope', 'read:pii')
+                $postmanPlain   = Get-MosaicToken -Step 'auth postman'
+                $postmanExpired = Get-MosaicToken -Step 'auth postman' -MintArgs @('--expires-in', '-60')
+                & $newmanCommand @($newmanPrefix + @(
+                    'run', $AuthPostman,
+                    '--environment', $AuthPostmanEnv,
+                    '--env-var', "routerUrl=$MosaicRouterUrl",
+                    '--env-var', "accountsUrl=$($Subgraphs['accounts'].Url)",
+                    '--env-var', "scopedToken=$postmanScoped",
+                    '--env-var', "plainToken=$postmanPlain",
+                    '--env-var', "expiredToken=$postmanExpired",
+                    '--bail'))
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'auth postman' (Join-Lines @(
+                        "newman exited with $LASTEXITCODE; its output above says which request failed."
+                        'The scoped request asserts that no field was refused rather than that'
+                        'the response has no errors: a run of this script submits a review whose'
+                        'author was never seeded, so one author is null for a reason no token'
+                        'could fix. See decision 98.'))
+                }
+                Write-Ok 'the auth collection passes against the router'
+            }
+
             # Down rather than stop, and now rather than in the finally block,
             # because the federated-wire section below wants this port.
             & docker compose --project-directory $RepoRoot down mosaic-router *> $null
@@ -2554,6 +2877,12 @@ try {
         $env:MOSAIC_RESET_DATABASE = $previousResetDatabase
     } else {
         Remove-Item Env:MOSAIC_RESET_DATABASE -ErrorAction SilentlyContinue
+    }
+
+    if ($jwtSecretWasSet) {
+        $env:MOSAIC_JWT_SECRET = $previousJwtSecret
+    } else {
+        Remove-Item Env:MOSAIC_JWT_SECRET -ErrorAction SilentlyContinue
     }
 
     if ($tempDir -and (Test-Path -LiteralPath $tempDir)) {

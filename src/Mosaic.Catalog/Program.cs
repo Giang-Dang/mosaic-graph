@@ -1,6 +1,7 @@
 using Mosaic.Catalog;
 using Mosaic.Catalog.Data;
 using Mosaic.ServiceDefaults;
+using Mosaic.ServiceDefaults.Auth;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -11,6 +12,10 @@ var builder = WebApplication.CreateBuilder(args);
 // half of every federated query being unobserved. Three lines fix the half that
 // was a missing registration. The half that is a missing trace is chapter 23's.
 builder.Services.AddMosaicServiceDefaults();
+
+// Chapter 15. Every service validates the same tokens the same way; the
+// key arrives through configuration and lives in nobody's source file.
+builder.Services.AddMosaicJwtAuthentication(builder.Configuration);
 
 // Catalog's own database, on the PostgreSQL server all six services share. EF
 // Core creates it on first start, so nothing in docker-compose.yml had to learn

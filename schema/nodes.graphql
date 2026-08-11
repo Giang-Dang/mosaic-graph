@@ -40,6 +40,16 @@ interface Node {
   id: ID!
 }
 
+"Defines when a policy shall be executed."
+enum ApplyPolicy {
+  "Before the resolver was executed."
+  BEFORE_RESOLVER
+  "After the resolver was executed."
+  AFTER_RESOLVER
+  "The policy is applied in the validation step before the execution."
+  VALIDATION
+}
+
 "Scalar representing a set of fields."
 scalar FieldSet
 

@@ -1,0 +1,382 @@
+{
+  "info": {
+    "_postman_id": "3f5b9c21-6d47-4a83-9e12-0c8a7b41d5e6",
+    "name": "Mosaic auth - chapter 15",
+    "description": "The four callers of chapter 15 of Federated GraphQL on .NET, plus the field that only answers because the router forwards a header.\n\nThree of the six requests need a token. They are collection variables rather than anything this collection can mint: an HS256 signature needs the signing key, and a Postman collection is not where a signing key belongs. scripts/verify.ps1 and scripts/verify.sh mint them with scripts/mint-token.mjs and pass them in with --env-var, which is also how a reader runs this by hand.\n\nRequires the seven services and the router, and MOSAIC_JWT_SECRET agreeing across all of them.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Anonymous: the protected field is refused per field",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "",
+              "// Not a 401. An anonymous caller is allowed in; what it may not have is",
+              "// removed from the answer, one error per instance of the protected field.",
+              "pm.test(\"the response carries errors\", function () {",
+              "    pm.expect(body.errors, \"errors\").to.be.an(\"array\").that.is.not.empty;",
+              "});",
+              "",
+              "// \"at least one\", not \"every one\". A full verification run submits a review",
+              "// against a customer key nothing seeded, and this query walks every author in",
+              "// the catalogue, so one error here is a resolution failure with no extensions",
+              "// code at all. Asserting that every error is an authorization error would be",
+              "// asserting a fact about a database nothing had written to. Decision 98.",
+              "const authErrors = body.errors.filter(function (e) {",
+              "    return e.extensions && e.extensions.code === \"UNAUTHORIZED_FIELD_OR_TYPE\";",
+              "});",
+              "",
+              "pm.test(\"the protected field is refused, and says why\", function () {",
+              "    pm.expect(authErrors.length, \"authorization errors\").to.be.above(0);",
+              "    pm.expect(authErrors[0].message).to.include(\"Reason: not authenticated.\");",
+              "});",
+              "",
+              "pm.test(\"every refusal names Customer.email\", function () {",
+              "    authErrors.forEach(function (e) {",
+              "        pm.expect(e.path[e.path.length - 1]).to.eql(\"email\");",
+              "    });",
+              "});",
+              "",
+              "// email is String!, so the null cannot stop there. It propagates to the",
+              "// nearest nullable ancestor, which is Review.author.",
+              "pm.test(\"the denied field takes its parent with it\", function () {",
+              "    const author = body.data.products[0].reviews.edges[0].node.author;",
+              "    pm.expect(author, \"author\").to.be.null;",
+              "});",
+              "",
+              "pm.test(\"the rest of the answer survives\", function () {",
+              "    pm.expect(body.data.products.length, \"products\").to.be.above(0);",
+              "    pm.expect(body.data.products[0].title).to.be.a(\"string\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "content-type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\": \"{ products { title reviews { edges { node { author { displayName email } } } } } }\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "With read:pii: the field answers",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "",
+              "// \"nothing refused\", not \"no errors\": see the anonymous request above, and",
+              "// decision 98. One author in this catalogue is null for a reason no token",
+              "// could fix, and that is not what this request is here to check.",
+              "const authErrors = (body.errors || []).filter(function (e) {",
+              "    return e.extensions && e.extensions.code === \"UNAUTHORIZED_FIELD_OR_TYPE\";",
+              "});",
+              "",
+              "pm.test(\"no field is refused\", function () {",
+              "    pm.expect(authErrors, JSON.stringify(authErrors)).to.be.empty;",
+              "});",
+              "",
+              "const author = body.data.products[0].reviews.edges[0].node.author;",
+              "pm.test(\"the author and the address both arrive\", function () {",
+              "    pm.expect(author, \"author\").to.be.an(\"object\");",
+              "    pm.expect(author.email, \"author.email\").to.be.a(\"string\").and.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "content-type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{scopedToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\": \"{ products { title reviews { edges { node { author { displayName email } } } } } }\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Logged in, wrong scope: a different reason, the same shape",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"the response carries errors\", function () {",
+              "    pm.expect(body.errors, \"errors\").to.be.an(\"array\").that.is.not.empty;",
+              "});",
+              "",
+              "// Same code as the anonymous run, one word different in the reason. That",
+              "// distinction is what tells a client whether to offer a login or an apology.",
+              "const authErrors = body.errors.filter(function (e) {",
+              "    return e.extensions && e.extensions.code === \"UNAUTHORIZED_FIELD_OR_TYPE\";",
+              "});",
+              "",
+              "pm.test(\"the reason is the missing scope\", function () {",
+              "    pm.expect(authErrors.length, \"authorization errors\").to.be.above(0);",
+              "    pm.expect(authErrors[0].message).to.include(\"Reason: missing required scopes.\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "content-type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{plainToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\": \"{ products { title reviews { edges { node { author { displayName email } } } } } }\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "An expired token is refused at the door",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The other three answer 200 and argue about fields. This one never reaches",
+              "// planning: the router's access controller rejects the request itself.",
+              "pm.test(\"responds 401\", function () { pm.response.to.have.status(401); });",
+              "",
+              "const body = pm.response.json();",
+              "pm.test(\"one error, lowercase, and no data at all\", function () {",
+              "    pm.expect(body.errors[0].message).to.eql(\"unauthorized\");",
+              "    pm.expect(body.data, \"data\").to.be.undefined;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "content-type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{expiredToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\": \"{ products { title reviews { edges { node { author { displayName email } } } } } }\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "A subgraph-side rule needs the header propagated",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "",
+              "// Query.customerById carries [Authorize], which Accounts enforces against the",
+              "// principal Accounts built. It only has one because router/config.yaml",
+              "// propagates Authorization. Take that block away and this fails for everybody.",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "pm.test(\"the customer comes back\", function () {",
+              "    pm.expect(body.data.customerById.displayName).to.be.a(\"string\").and.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "content-type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{plainToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\": \"{ customerById(id: \\\"{{customerId}}\\\") { displayName } }\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "And refuses an anonymous caller, naming a fetch",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "",
+              "// The outer message names a transport failure that did not happen. The inner",
+              "// one is the truth, and it is two levels down inside extensions.",
+              "pm.test(\"the outer error blames the subgraph fetch\", function () {",
+              "    pm.expect(body.errors[0].message).to.include(\"Failed to fetch from Subgraph\");",
+              "    pm.expect(body.errors[0].message).to.include(\"accounts\");",
+              "});",
+              "",
+              "pm.test(\"the real reason is buried in extensions\", function () {",
+              "    const inner = body.errors[0].extensions.errors[0];",
+              "    pm.expect(inner.extensions.code).to.eql(\"AUTH_NOT_AUTHENTICATED\");",
+              "});",
+              "",
+              "pm.test(\"the field is null\", function () {",
+              "    pm.expect(body.data.customerById, \"customerById\").to.be.null;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "content-type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\": \"{ customerById(id: \\\"{{customerId}}\\\") { displayName } }\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}/graphql"
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "scopedToken",
+      "value": ""
+    },
+    {
+      "key": "plainToken",
+      "value": ""
+    },
+    {
+      "key": "expiredToken",
+      "value": ""
+    },
+    {
+      "key": "customerId",
+      "value": "Q3VzdG9tZXI6AAAAwAAAAECAAAAAAAAABA=="
+    }
+  ]
+}

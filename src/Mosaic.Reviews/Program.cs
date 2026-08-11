@@ -2,10 +2,15 @@ using Mosaic.Reviews;
 using Mosaic.Reviews.Data;
 using Mosaic.Reviews.Errors;
 using Mosaic.ServiceDefaults;
+using Mosaic.ServiceDefaults.Auth;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMosaicServiceDefaults();
+
+// Chapter 15. Every service validates the same tokens the same way; the
+// key arrives through configuration and lives in nobody's source file.
+builder.Services.AddMosaicJwtAuthentication(builder.Configuration);
 
 builder.Services.AddReviewsDatabase(
     builder.Configuration.GetConnectionString("Reviews")
