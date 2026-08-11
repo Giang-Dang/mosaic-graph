@@ -31,6 +31,8 @@ Check out a tag to get the system as it stands at the end of that chapter.
 | `ch13` | 13. Hard Modeling Problems | Seven services. `Mosaic.Nodes` on 5107 owns `Query.node` and `Query.nodes` for the whole graph and has no database at all; `Review` and `Order` become entities so that the router can find one from an identifier. Catalog's paging cursor gets its tiebreaker back, which is a defect chapter 4 shipped and no schema could show. Plus `samples/interface-object` and `scripts/modeling-cases.mjs`, fourteen cases about enums, value types, scalars and `node` |
 | `ch14` | 14. Real-Time in a Federated World | Seven services and an eighth subgraph that is a file. `schema/streams.graphql` declares one subscription field and a NATS subject and has no project behind it: the router subscribes to the broker itself and resolves the payload from a type name and a key. `Mosaic.Reviews` gains the publisher that feeds it and `mosaic-nats` joins `docker-compose.yml`. Plus `scripts/realtime-cases.mjs`, eight cases about a transport no schema mentions, and `scripts/subscription-run.mjs`, which finally puts a subscription inside the gate |
 
+| `ch15` | 15. Identity and Authorization Across the Graph | The first tag where the graph refuses anybody. A symmetric-key JWT, minted by `scripts/mint-token.mjs`; `Customer.email`, `Query.customerById`, `Query.ordersByCustomer` and `submitReview` guarded; and the same rule written twice on purpose, once as a federation directive the router enforces and once as a `[Authorize]` the subgraph enforces, because all seven services listen on a host port. `Mosaic.Nodes` learns who is asking, so that `Query.node` cannot be pointed at somebody else's order, and Ordering's reference resolver learns whose order it is. Plus `scripts/auth-cases.mjs`, five cases about what a composer keeps and what it throws away, and `scripts/auth-run.mjs`, fifteen about what a running graph answers |
+
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
 intermediate one.
@@ -43,6 +45,30 @@ intermediate one.
   six services and six databases in that one container
 - Node, to run the Postman collections from the command line and, since chapter
   7, to compose supergraphs with `wgc`
+
+Since chapter 15 four of the services and the router want a signing key in
+`MOSAIC_JWT_SECRET`. `docker-compose.yml` supplies a development default, so
+`docker compose up` needs nothing from you; a service started by hand with
+`dotnet run` will refuse to start without it and say so. The value the compose
+file uses is the one this prints:
+
+```
+node scripts/mint-token.mjs --secret
+```
+
+A token to go with it, for any field the graph now guards. The subject of a
+Mosaic token is a customer's global object identifier, which is the same string
+`Review.author { id }` hands a client:
+
+```
+node scripts/mint-token.mjs --customer Q3VzdG9tZXI6AAAAwAAAAECAAAAAAAAABA==
+```
+
+That key is symmetric and it is in a public repository, which means every party
+holding it can mint tokens as well as check them. It is a development
+convenience and it would be a finding anywhere else; the router's configuration
+takes a JWKS url instead, and `router/config.yaml` has the two-line swap
+commented beside the block it replaces.
 
 ## Running it
 

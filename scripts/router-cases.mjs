@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-// Chapter 10's three router surprises, each reproduced on purpose.
+// Router configuration surprises, each reproduced on purpose. Chapter 10
+// started this file with three and chapter 15 added a fourth, which is why it
+// is named after what it does rather than after one chapter: a case belongs
+// here when the thing being measured is a property of the router's
+// configuration rather than of a schema.
 //
 // The chapter prints what these produce, so the gate asserts them. Each case
 // starts a real Cosmo Router container against a real execution config, asks
@@ -173,6 +177,160 @@ const CASES = [
       }
       if (!logged.some((line) => line.includes('Cannot query field "price" on type "Query"'))) {
         problems.push(`the planner error the chapter prints is not in the log; found: ${logged[0] ?? 'nothing'}`);
+      }
+      return { problems, evidence };
+    },
+  },
+  {
+    // Chapter 15's other one, and it exists because the chapter prints a
+    // two-row table and only one row of it was assertable anywhere else. Both
+    // verification scripts count the Accounts requests a refused field costs
+    // and require zero, which is the "on" row. Nothing produced the "off" row
+    // again, and decision 66 says a count belongs in a gate.
+    //
+    // What is asserted here is the same fact in the form a response carries:
+    // with pre-fetch authorization off the client is told twice, once by
+    // Accounts and once by the router, and the subgraph's error is nested
+    // inside the router's under its service name. That nested error only
+    // exists if the fetch happened.
+    name: 'pre-fetch-authorization-skips-the-fetch',
+    summary: 'off, a refused field is still fetched, and the subgraph says so in the reply',
+    async run(ctx) {
+      const evidence = [];
+
+      const base = [
+        'authentication:',
+        '  jwt:',
+        '    jwks:',
+        '      - symmetric_algorithm: HS256',
+        '        secret: "case-signing-key-at-least-32-bytes-long"',
+        '        header_key_id: mosaic-dev',
+        'headers:',
+        '  all:',
+        '    request:',
+        '      - op: propagate',
+        '        named: Authorization',
+      ].join('\n');
+
+      const authorization = (prefetch) => [
+        'authorization:',
+        '  require_authentication: false',
+        '  reject_operation_if_unauthorized: false',
+        `  enable_pre_fetch_field_authorization: ${prefetch}`,
+      ].join('\n');
+
+      // An anonymous request for a field carrying @requiresScopes. Both routers
+      // refuse it; the question is whether Accounts was asked first.
+      const query = '{ customerById(id: "Q3VzdG9tZXI6AAAAwAAAAECAAAAAAAAAAQ==") { displayName } }';
+
+      const off = await ctx.router({ config: `${base}\n${authorization(false)}` });
+      const refusedWithFetch = await off.ask(query);
+      evidence.push(`pre-fetch off: ${JSON.stringify(refusedWithFetch.json).slice(0, 400)}`);
+
+      const on = await ctx.router({ config: `${base}\n${authorization(true)}` });
+      const refusedWithoutFetch = await on.ask(query);
+      evidence.push(`pre-fetch on:  ${JSON.stringify(refusedWithoutFetch.json).slice(0, 400)}`);
+
+      const offText = JSON.stringify(refusedWithFetch.json ?? {});
+      const onText = JSON.stringify(refusedWithoutFetch.json ?? {});
+
+      const problems = [];
+      if (!off.started) problems.push('the pre-fetch-off router did not start');
+      if (!on.started) problems.push('the pre-fetch-on router did not start');
+      for (const [label, text] of [['off', offText], ['on', onText]]) {
+        if (!text.includes('Unauthorized to load field')) {
+          problems.push(`with pre-fetch ${label} the router did not refuse the field at all: ${text.slice(0, 200)}`);
+        }
+      }
+      // AUTH_NOT_AUTHENTICATED rather than the service name, because a
+      // subgraph that is simply down also produces an error naming accounts,
+      // and that would pass this case for the wrong reason. This code is
+      // HotChocolate's, so it can only be here if Accounts answered.
+      const accountsRefused = (text) =>
+        text.includes('"serviceName":"accounts"') && text.includes('AUTH_NOT_AUTHENTICATED');
+
+      if (!accountsRefused(offText)) {
+        problems.push(
+          'with pre-fetch off the reply carries no refusal from accounts, so the fetch the '
+          + 'chapter says happens did not happen. Either the default changed, or the router '
+          + `stopped nesting subgraph errors, or Accounts is not answering: ${offText.slice(0, 300)}`,
+        );
+      }
+      if (accountsRefused(onText)) {
+        problems.push(
+          'with pre-fetch on the reply still carries a refusal from accounts, so the field was '
+          + `fetched and then discarded. That is what the setting is meant to remove: ${onText.slice(0, 300)}`,
+        );
+      }
+      return { problems, evidence };
+    },
+  },
+  {
+    // Chapter 15's, and the reason this file is now named after what it does
+    // rather than after the chapter that started it. It belongs here because it
+    // is a property of a router configuration rather than of a schema, and this
+    // is the only harness in the repository that starts a router on a
+    // configuration nobody deployed.
+    name: 'websocket-auth-closes-the-public-graph',
+    summary: 'turning on initial-payload WebSocket auth makes every anonymous HTTP request a 401',
+    async run(ctx) {
+      const evidence = [];
+
+      // The whole configuration Mosaic runs, minus the block under test, so
+      // that the two routers differ in exactly one thing.
+      const base = [
+        'authentication:',
+        '  jwt:',
+        '    jwks:',
+        '      - symmetric_algorithm: HS256',
+        '        secret: "case-signing-key-at-least-32-bytes-long"',
+        '        header_key_id: mosaic-dev',
+        'authorization:',
+        '  require_authentication: false',
+        '  reject_operation_if_unauthorized: false',
+      ].join('\n');
+
+      const websocketBlock = [
+        '',
+        'websocket:',
+        '  authentication:',
+        '    from_initial_payload:',
+        '      enabled: true',
+        '      key: "Authorization"',
+        '      export_token:',
+        '        enabled: true',
+        '        header_key: "Authorization"',
+      ].join('\n');
+
+      // The control. require_authentication is false, so an anonymous request
+      // is supposed to be served and only a field carrying a directive is
+      // supposed to be refused.
+      const without = await ctx.router({ config: base });
+      const anonymousWithout = await without.ask('{ __typename }');
+      evidence.push(`anonymous, no websocket block:   HTTP ${anonymousWithout.status} ${JSON.stringify(anonymousWithout.json)}`);
+
+      // The same router, plus the block that lets a browser authenticate a
+      // subscription. Nothing else changes, and nothing in this block mentions
+      // HTTP.
+      const withBlock = await ctx.router({ config: base + websocketBlock });
+      const anonymousWith = await withBlock.ask('{ __typename }');
+      evidence.push(`anonymous, with websocket block: HTTP ${anonymousWith.status} ${JSON.stringify(anonymousWith.json)}`);
+
+      const problems = [];
+      if (!without.started) problems.push('the control router did not start');
+      if (!withBlock.started) problems.push('the router with the websocket block did not start');
+      if (anonymousWithout.status !== 200) {
+        problems.push(
+          `the control refused an anonymous request with ${anonymousWithout.status}, so this case is `
+          + 'measuring something other than the websocket block',
+        );
+      }
+      if (anonymousWith.status !== 401) {
+        problems.push(
+          `expected 401 for an anonymous request once from_initial_payload is on, got ${anonymousWith.status}. `
+          + 'If this has started passing, Cosmo has fixed it: chapter 15 argues from this behaviour and '
+          + 'needs rewriting, and router/config.yaml can stop carrying the block as a comment.',
+        );
       }
       return { problems, evidence };
     },

@@ -4,6 +4,46 @@
     "description": "Mosaic's six subgraphs, one at a time, as chapter 12 of Federated GraphQL on .NET leaves them. It replaces postman/mosaic-federation.postman_collection.json, which asked port 5100 for most of what it wanted and cannot work here: there is no port 5100. That is the second time a collection in this repository has been deleted rather than patched, and the reason is the same both times - a collection whose requests point at a service that no longer exists is not a collection with a few broken requests in it.\n\nThere is no router in here, which is the same argument chapter 8 made and chapter 12 makes five more times: a subgraph you cannot test on its own is a subgraph you will end up debugging through a router. postman/mosaic-router.postman_collection.json is the other half and asks the graph.\n\nStart the database and the six services first:\n\n    docker compose up -d --build mosaic-db mosaic-catalog mosaic-pricing mosaic-inventory mosaic-accounts mosaic-reviews mosaic-ordering\n\nSix databases on one server now - catalog, pricing, inventory, accounts, reviews and ordering - and no service can read another's tables. That is what the _entities requests are really testing: the only thing crossing any of those gaps is a key.\n\nOrder is load-bearing. Product keys come out of Catalog and customer keys come out of Reviews, because a key is an opaque node id and nobody can type one by hand; and the mutation at the bottom writes, so every assertion about a seeded count sits above it. The run expects a freshly seeded set of databases.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Chapter 15. This collection signs its own tokens, which is a second",
+          "// implementation of scripts/mint-token.mjs and is here for a reason rather",
+          "// than by accident: four of the requests below choose the customer they act",
+          "// as inside their own pre-request script, so there is no identifier for the",
+          "// verification script to mint a token for before newman starts.",
+          "//",
+          "// The two implementations agree about the issuer, the audience, the key id",
+          "// and the shape of the scope claim, and nothing checks that they still do.",
+          "// If a token minted here stops being accepted, compare this with",
+          "// scripts/mint-token.mjs before looking anywhere else.",
+          "const secret = pm.environment.get('jwtSecret') || pm.collectionVariables.get('jwtSecret');",
+          "",
+          "const base64url = (bytes) => CryptoJS.enc.Base64.stringify(bytes)",
+          "  .replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
+          "const encode = (text) => base64url(CryptoJS.enc.Utf8.parse(text));",
+          "",
+          "mosaicToken = function (customerId, scopes) {",
+          "  const header = encode(JSON.stringify({ alg: 'HS256', typ: 'JWT', kid: 'mosaic-dev' }));",
+          "  const now = Math.floor(Date.now() / 1000);",
+          "  const payload = encode(JSON.stringify({",
+          "    iss: 'mosaic',",
+          "    aud: 'mosaic-graph',",
+          "    sub: customerId,",
+          "    scope: scopes || 'orders:read customers:read reviews:write',",
+          "    iat: now,",
+          "    exp: now + 3600",
+          "  }));",
+          "  const signature = base64url(CryptoJS.HmacSHA256(header + '.' + payload, secret));",
+          "  return 'Bearer ' + header + '.' + payload + '.' + signature;",
+          "};"
+        ]
+      }
+    }
+  ],
   "item": [
     {
       "name": "Catalog owns the products",
@@ -339,7 +379,12 @@
               "const keys = JSON.parse(pm.collectionVariables.get('customerKeys'));",
               "pm.variables.set('representations', JSON.stringify(",
               "  keys.map((id) => ({ __typename: 'Customer', id }))));",
-              "pm.collectionVariables.set('oneCustomerKey', keys[0]);"
+              "pm.collectionVariables.set('oneCustomerKey', keys[0]);",
+              "",
+              "// Chapter 15. Customer.email is guarded now, and this request asks for",
+              "// it. Any customer's token will do: email is guarded by whether you are",
+              "// somebody rather than by whether you are this person.",
+              "pm.variables.set('authToken', mosaicToken(keys[0]));"
             ]
           }
         },
@@ -371,7 +416,10 @@
       ],
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "{{authToken}}" }
+        ],
         "body": {
           "mode": "raw",
           "raw": "{\"query\":\"query($representations: [_Any!]!) { _entities(representations: $representations) { ... on Customer { id displayName email } } }\",\"variables\":{\"representations\":{{representations}}}}"
@@ -419,7 +467,12 @@
             "exec": [
               "const keys = JSON.parse(pm.collectionVariables.get('customerKeys'));",
               "pm.collectionVariables.set('orderCustomerKeys', JSON.stringify(keys));",
-              "pm.variables.set('customerId', keys[0]);"
+              "pm.variables.set('customerId', keys[0]);",
+              "",
+              "// Chapter 15. The field this request reaches is guarded, and where it",
+              "// writes, the graph also checks that the review is in the caller's own",
+              "// name. So the token has to name the same customer the request does.",
+              "pm.variables.set('authToken', mosaicToken(pm.variables.get('customerId')));"
             ]
           }
         },
@@ -455,7 +508,10 @@
       ],
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "{{authToken}}" }
+        ],
         "body": {
           "mode": "raw",
           "raw": "{\"query\":\"query($customerId: ID!) { ordersByCustomer(customerId: $customerId) { total { amount currency } customer { id } lines { quantity unitPrice { amount } product { id } } } }\",\"variables\":{\"customerId\":\"{{customerId}}\"}}"
@@ -526,7 +582,12 @@
               "pm.variables.set('productId', unreviewed[0]);",
               "pm.collectionVariables.set('writtenProductId', unreviewed[0]);",
               "pm.variables.set('customerId', customers[0]);",
-              "pm.collectionVariables.set('writtenCustomerId', customers[0]);"
+              "pm.collectionVariables.set('writtenCustomerId', customers[0]);",
+              "",
+              "// Chapter 15. The field this request reaches is guarded, and where it",
+              "// writes, the graph also checks that the review is in the caller's own",
+              "// name. So the token has to name the same customer the request does.",
+              "pm.variables.set('authToken', mosaicToken(pm.variables.get('customerId')));"
             ]
           }
         },
@@ -555,7 +616,10 @@
       ],
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "{{authToken}}" }
+        ],
         "body": {
           "mode": "raw",
           "raw": "{\"query\":\"mutation($input: SubmitReviewInput!) { submitReview(input: $input) { review { id rating author { id } } errors { __typename ... on Error { message code } } } }\",\"variables\":{\"input\":{\"productId\":\"{{productId}}\",\"customerId\":\"{{customerId}}\",\"rating\":5,\"body\":\"Solid.\"}}}"
@@ -576,7 +640,12 @@
               "// A syntactically valid Customer node id for a customer nobody has",
               "// ever seeded. Built rather than fetched, which is the point.",
               "pm.variables.set('customerId', Buffer.from(",
-              "  'Customer:\\u0000\\u0000\\u0000\\u00c0\\u0000\\u0000\\u0000@\\u0080\\u0000\\u0000\\u0000\\u0000\\u0000\\u0000\\u00ff', 'binary').toString('base64'));"
+              "  'Customer:\\u0000\\u0000\\u0000\\u00c0\\u0000\\u0000\\u0000@\\u0080\\u0000\\u0000\\u0000\\u0000\\u0000\\u0000\\u00ff', 'binary').toString('base64'));",
+              "",
+              "// Chapter 15. The field this request reaches is guarded, and where it",
+              "// writes, the graph also checks that the review is in the caller's own",
+              "// name. So the token has to name the same customer the request does.",
+              "pm.variables.set('authToken', mosaicToken(pm.variables.get('customerId')));"
             ]
           }
         },
@@ -605,7 +674,10 @@
       ],
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "{{authToken}}" }
+        ],
         "body": {
           "mode": "raw",
           "raw": "{\"query\":\"mutation($input: SubmitReviewInput!) { submitReview(input: $input) { review { id } errors { __typename ... on Error { message code } } } }\",\"variables\":{\"input\":{\"productId\":\"{{productId}}\",\"customerId\":\"{{customerId}}\",\"rating\":4,\"body\":\"Written by nobody.\"}}}"
@@ -623,7 +695,12 @@
             "exec": [
               "// The same product and the same customer as two requests ago.",
               "pm.variables.set('productId', pm.collectionVariables.get('writtenProductId'));",
-              "pm.variables.set('customerId', pm.collectionVariables.get('writtenCustomerId'));"
+              "pm.variables.set('customerId', pm.collectionVariables.get('writtenCustomerId'));",
+              "",
+              "// Chapter 15. The field this request reaches is guarded, and where it",
+              "// writes, the graph also checks that the review is in the caller's own",
+              "// name. So the token has to name the same customer the request does.",
+              "pm.variables.set('authToken', mosaicToken(pm.variables.get('customerId')));"
             ]
           }
         },
@@ -649,7 +726,10 @@
       ],
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "{{authToken}}" }
+        ],
         "body": {
           "mode": "raw",
           "raw": "{\"query\":\"mutation($input: SubmitReviewInput!) { submitReview(input: $input) { review { id } errors { __typename ... on Error { message code } } } }\",\"variables\":{\"input\":{\"productId\":\"{{productId}}\",\"customerId\":\"{{customerId}}\",\"rating\":3,\"body\":\"Again.\"}}}"

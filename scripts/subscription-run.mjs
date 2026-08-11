@@ -33,6 +33,12 @@
 // refused by the domain and publishes nothing, which is correct behaviour and
 // would look exactly like a broken subscription.
 
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+// Chapter 15. The write half of this script needs a token now.
+const mintScript = fileURLToPath(new URL('./mint-token.mjs', import.meta.url));
+
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) {
   args.set(process.argv[i].replace(/^--/, ''), process.argv[i + 1]);
@@ -208,9 +214,22 @@ async function main() {
         + `customerId: "${customerId}", rating: 4, body: "Write ${index + 1} of `
         + `${customerIds.length}, with two subscriptions open." }) `
         + '{ review { id } errors { __typename } } }';
+      // Chapter 15. submitReview refuses a review signed in somebody else's
+      // name, so the write needs a token whose subject is the customer it
+      // names. Nothing about the subscriptions changed; only the write did.
+      const token = execFileSync(
+        process.execPath,
+        [mintScript, '--customer', customerId],
+        { encoding: 'utf8' },
+      ).trim();
+
       const response = await fetch(routerUrl, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+          authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ query: mutation }),
       }).then((r) => r.json());
 

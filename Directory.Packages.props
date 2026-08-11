@@ -32,6 +32,31 @@
     <!-- Chapter 7's federated-wire sample, and since chapter 12 all six real
          subgraphs. -->
     <PackageVersion Include="HotChocolate.ApolloFederation" Version="$(HotChocolateVersion)" />
+
+    <!-- Chapter 15. Two packages, and the split between them is the chapter's
+         subject rather than a packaging detail.
+
+         HotChocolate.ApolloFederation, already above, is what emits
+         @authenticated and @requiresScopes into a subgraph's published schema.
+         Those directives are read by the router and enforced there; the
+         package's own project file references HotChocolate.Core and nothing
+         else, so nothing it emits can enforce anything locally.
+
+         HotChocolate.AspNetCore.Authorization is the other half: [Authorize],
+         the @authorize directive, and the middleware that actually refuses a
+         field. It knows nothing about federation. A field that has to be
+         refused both at the router and at its own service is declared twice,
+         with two attributes from two packages, and no compiler relates them. -->
+    <PackageVersion Include="HotChocolate.AspNetCore.Authorization" Version="$(HotChocolateVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Chapter 15. The token itself. Mosaic signs with a symmetric key held in
+         MOSAIC_JWT_SECRET rather than standing up an identity provider: the
+         router's JWKS block takes either, the rest of the chapter is identical
+         under both, and an OAuth server is a book of its own. 10.0.10 is the
+         same band as the Entity Framework pin above. -->
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
   </ItemGroup>
 
   <ItemGroup>

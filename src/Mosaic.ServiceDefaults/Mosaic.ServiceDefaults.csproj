@@ -34,6 +34,14 @@
          each get this transitively from the Npgsql provider; this project has
          no provider and has to name it. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+
+    <!-- Chapter 15. Validating a signature and evaluating a policy are the same
+         work in all seven services and nothing any two of them have to agree
+         about, so by chapter 12's test they are platform and live here. The
+         JwtBearer handler is a package rather than part of the shared
+         framework. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+    <PackageReference Include="HotChocolate.AspNetCore.Authorization" />
   </ItemGroup>
 
 </Project>

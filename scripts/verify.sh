@@ -36,7 +36,7 @@
 # script starts it from docker-compose.yml, runs a third Postman collection
 # against it - the storefront query that no single service can answer, and the
 # plan the router made to answer it - and then runs scripts/router-cases.mjs,
-# which reproduces the three router behaviours chapter 10 calls surprising. Set
+# which reproduces the router behaviours chapters 10 and 15 call surprising. Set
 # MOSAIC_SKIP_ROUTER=1 to leave that out.
 #
 # scripts/verify.ps1 is the same script for readers on Windows. Changes to one
@@ -182,6 +182,19 @@ REALTIME_CASES="$REPO_ROOT/scripts/realtime-cases.mjs"
 SUBSCRIPTION_RUN="$REPO_ROOT/scripts/subscription-run.mjs"
 REALTIME_POSTMAN="$REPO_ROOT/postman/mosaic-realtime.postman_collection.json"
 REALTIME_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-realtime.local.postman_environment.json"
+
+# -- chapter 15's authorization -----------------------------------------------
+
+# Two scripts and a collection, and the split between the first two is the one
+# this repository has settled into: auth-cases.mjs composes and reads what the
+# composer wrote, auth-run.mjs asks a live graph and reads what it answered.
+# The fourth artefact of this chapter is a case inside scripts/router-cases.mjs,
+# because what it measures is a property of a router configuration rather than
+# of a schema.
+AUTH_CASES="$REPO_ROOT/scripts/auth-cases.mjs"
+AUTH_RUN="$REPO_ROOT/scripts/auth-run.mjs"
+AUTH_POSTMAN="$REPO_ROOT/postman/mosaic-auth.postman_collection.json"
+AUTH_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-auth.local.postman_environment.json"
 
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
@@ -342,6 +355,37 @@ SkipWarmupExecutionMiddleware
 OperationVariableCoercionMiddleware
 ConcurrencyGateMiddleware
 OperationExecutionMiddleware"
+
+# Chapter 15. The four services that do not call AddMosaicAuthorization still
+# assemble the thirteen above; the three that do assemble fifteen. This is not a
+# loosened assertion, it is a second exact one: adding authorization to a
+# HotChocolate service inserts two middleware into the pipeline chapter 3 walks,
+# and they do not go on the end. PrepareAuthorization goes in front of
+# validation and AuthorizeRequest goes behind it, which is what lets a policy
+# with apply: VALIDATION refuse a whole request before any resolver runs.
+#
+# Chapter 3's number is still thirteen and still correct for the service that
+# chapter measured. Say so if it is quoted again.
+EXPECTED_AUTHORIZED_PIPELINE="InstrumentationMiddleware
+ExceptionMiddleware
+TimeoutMiddleware
+DocumentCacheMiddleware
+DocumentParserMiddleware
+HotChocolate.Authorization.Pipeline.PrepareAuthorization
+DocumentValidationMiddleware
+HotChocolate.Authorization.Pipeline.AuthorizeRequest
+CostAnalyzerMiddleware
+OperationCacheMiddleware
+OperationResolverMiddleware
+SkipWarmupExecutionMiddleware
+OperationVariableCoercionMiddleware
+ConcurrencyGateMiddleware
+OperationExecutionMiddleware"
+
+# Which of the seven turn GraphQL authorization on. Nodes authenticates and does
+# not authorize - it refuses a type to a stranger in a node resolver rather than
+# through a policy - so it keeps the thirteen.
+AUTHORIZED_SUBGRAPHS="accounts reviews ordering"
 
 # One _entities field and 25 review connections. It was 146 from chapter 2 to
 # chapter 11 and the missing 120 are the authors, which is a stranger result
@@ -739,18 +783,31 @@ published_sdl() {
 
 # Posts a request body to a subgraph and saves the answer. $1 the base URL, $2
 # the file holding the body, $3 where the answer goes, $4 the step a failure is
-# reported under. Every query sent through here is supposed to succeed outright,
-# so a non-200 or an errors key ends the run.
+# reported under, $5 an optional bearer token. Every query sent through here is
+# supposed to succeed outright, so a non-200 or an errors key ends the run - a
+# refusal chapter 15 wants to see is read straight off the saved response by the
+# caller instead, the way the pre-fetch authorization check below does.
 post_graphql() {
     local status
     local has_errors
+    local token="${5:-}"
 
-    status="$(curl -sS -o "$3" -w '%{http_code}' \
-        --max-time 120 \
-        -H 'Content-Type: application/json' \
-        -H 'Accept: application/json' \
-        --data-binary "@$2" \
-        "$1/graphql")"
+    if [ -n "$token" ]; then
+        status="$(curl -sS -o "$3" -w '%{http_code}' \
+            --max-time 120 \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            -H "Authorization: Bearer $token" \
+            --data-binary "@$2" \
+            "$1/graphql")"
+    else
+        status="$(curl -sS -o "$3" -w '%{http_code}' \
+            --max-time 120 \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            --data-binary "@$2" \
+            "$1/graphql")"
+    fi
 
     if [ "$status" != "200" ]; then
         step_fail "$4" "POST $1/graphql answered $status.
@@ -769,6 +826,30 @@ $(cat "$3" 2>/dev/null)"
         step_fail "$4" "The response carries an errors key. This query is supposed to succeed outright.
 
 $(cat "$3" 2>/dev/null)"
+    fi
+}
+
+# Chapter 15. A token for one customer, minted the way a reader mints one.
+# Nothing here caches: a token is three lines of JSON and an HMAC, and a cache
+# would be a place for an expired one to hide. $1 the customer id, $2 an
+# optional space-delimited scope list. Leaves the token in $MOSAIC_TOKEN rather
+# than printing it, because this is called directly rather than through a
+# command substitution - a step_fail inside a command substitution would only
+# end the subshell it ran in, not the run.
+mint_mosaic_token() {
+    local customer="$1"
+    local scopes="${2:-}"
+
+    if [ -n "$scopes" ]; then
+        MOSAIC_TOKEN="$(node "$REPO_ROOT/scripts/mint-token.mjs" --customer "$customer" --scopes "$scopes")"
+    else
+        MOSAIC_TOKEN="$(node "$REPO_ROOT/scripts/mint-token.mjs" --customer "$customer")"
+    fi
+
+    if [ $? -ne 0 ] || [ -z "$MOSAIC_TOKEN" ]; then
+        step_fail 'mint a token' "node scripts/mint-token.mjs did not print a token.
+Chapter 15 gave three of the seven services something to check, and every step
+below that reads a guarded field needs one."
     fi
 }
 
@@ -948,6 +1029,28 @@ if [ $? -ne 0 ]; then
 $SDK_VERSION"
 fi
 step_ok "dotnet sdk $SDK_VERSION"
+
+# -- 1a2. the signing key ---------------------------------------------------
+
+# Chapter 15. Four of the seven services refuse to start without a signing key,
+# on purpose: a service that came up silently unable to validate a token would
+# refuse every guarded field and look like an authorization bug rather than a
+# missing variable. So the gate supplies the same development key
+# docker-compose.yml does, and a run that already has one in the environment
+# keeps it, which is how a reader checks this against a key of their own.
+if [ -z "${MOSAIC_JWT_SECRET:-}" ]; then
+    require_command node 'signing key' \
+        'scripts/mint-token.mjs prints the development signing key four of the services need to start.'
+    MOSAIC_JWT_SECRET="$(node "$REPO_ROOT/scripts/mint-token.mjs" --secret)"
+    if [ -z "$MOSAIC_JWT_SECRET" ]; then
+        step_fail 'signing key' 'node scripts/mint-token.mjs --secret printed nothing.'
+    fi
+    export MOSAIC_JWT_SECRET
+    step_ok 'signing key taken from scripts/mint-token.mjs'
+else
+    export MOSAIC_JWT_SECRET
+    step_ok 'signing key taken from MOSAIC_JWT_SECRET in the environment'
+fi
 
 # -- 1b. the database -------------------------------------------------------
 
@@ -1400,10 +1503,18 @@ chapter 12, so this is a count of what it stored rather than of what it looked
 up."
 fi
 
+# Chapter 15 put @authenticated and [Authorize] on Customer.email, and this
+# query selects it, so it needs a token now. Any customer's will do: email is
+# guarded by "are you somebody" rather than by "are you this person", which is
+# a distinction the chapter spends a section on. The first customer key is used
+# because it is one this script is already holding.
+mint_mosaic_token "$(head -n 1 "$TEMP_DIR/customer-keys.txt")"
+entities_token="$MOSAIC_TOKEN"
+
 customer_entities_request "$TEMP_DIR/customer-keys.txt" "$ACCOUNTS_ENTITIES_QUERY" \
     > "$TEMP_DIR/accounts-entities-request.json"
 post_graphql "$MOSAIC_ACCOUNTS_URL" "$TEMP_DIR/accounts-entities-request.json" \
-    "$TEMP_DIR/accounts-entities.json" 'accounts _entities'
+    "$TEMP_DIR/accounts-entities.json" 'accounts _entities' "$entities_token"
 
 resolved_customers="$(resolved_customer_count "$TEMP_DIR/accounts-entities.json")"
 if [ "$resolved_customers" -ne "$EXPECTED_DISTINCT_CUSTOMERS" ]; then
@@ -1520,14 +1631,19 @@ if [ "$customer_key_count" -lt 1 ]; then
     step_fail 'orders' 'No review carried an author, so there is no customer key to follow.'
 fi
 
+# Chapter 15 made this field refuse anybody who is not the customer named in
+# the argument, so the walk mints a token per candidate rather than asking
+# once. That is the honest cost of the rule: a caller acting for somebody else
+# no longer exists, including this script.
 customer_key=""
 order_count=0
 line_count=0
 line_product_key=""
 while read -r candidate; do
+    mint_mosaic_token "$candidate"
     printf '{"query":"{ ordersByCustomer(customerId: \\"%s\\") { total { amount } lines { quantity product { id } } } }"}' \
         "$candidate" > "$TEMP_DIR/orders-request.json"
-    post_graphql "$MOSAIC_ORDERING_URL" "$TEMP_DIR/orders-request.json" "$TEMP_DIR/orders.json" 'orders'
+    post_graphql "$MOSAIC_ORDERING_URL" "$TEMP_DIR/orders-request.json" "$TEMP_DIR/orders.json" 'orders' "$MOSAIC_TOKEN"
 
     read -r order_count line_count line_product_key <<< "$(summarise_orders "$TEMP_DIR/orders.json")"
     if [ "$order_count" -gt 0 ]; then
@@ -1640,6 +1756,52 @@ done
 
 # The pipeline is logged once, while the schema is being built, so by the time a
 # query has been answered these lines are already there.
+#
+# Checked on every one of the seven since chapter 13. The list is chapter 3's
+# and none of them should differ from it: they all call the same
+# AddMosaicSubgraph, and a service that assembled a different pipeline would be
+# a service whose registrations had drifted from the platform's.
+for entry in $SUBGRAPHS; do
+    pipeline_name="${entry%%:*}"
+
+    case " $AUTHORIZED_SUBGRAPHS " in
+        *" $pipeline_name "*) expected_pipeline="$EXPECTED_AUTHORIZED_PIPELINE" ;;
+        *) expected_pipeline="$EXPECTED_PIPELINE" ;;
+    esac
+    expected_pipeline_count="$(printf '%s\n' "$expected_pipeline" | grep -c .)"
+
+    subgraph_pipeline="$(sed -n 's/^ *[0-9][0-9]*\. \([^ ][^ ]*\) *$/\1/p' "$(subgraph_log "$pipeline_name")" 2>/dev/null)"
+    subgraph_pipeline_count="$(printf '%s\n' "$subgraph_pipeline" | grep -c .)"
+
+    if [ "$subgraph_pipeline_count" -ne "$expected_pipeline_count" ]; then
+        step_fail 'request pipeline' "The $pipeline_name subgraph assembled $subgraph_pipeline_count middleware, not $expected_pipeline_count.
+Found: $subgraph_pipeline
+
+All seven call AddMosaicSubgraph and AddMosaicPipelineReport, so a difference
+here is a difference in one service's registrations. Since chapter 15 three of
+them also call AddMosaicAuthorization, which adds two middleware;
+AUTHORIZED_SUBGRAPHS at the top of this file is the list."
+    fi
+
+    if [ "$subgraph_pipeline" != "$expected_pipeline" ]; then
+        step_fail 'request pipeline' "The $pipeline_name subgraph's pipeline is not in the expected order.
+
+Expected:
+$expected_pipeline
+
+Found:
+$subgraph_pipeline
+
+The order is the spine of chapter 3, and where chapter 15's two authorization
+middleware sit inside it is that chapter's. Work out what moved rather than
+reordering the list to match."
+    fi
+done
+step_ok "request pipelines: $(printf '%s\n' "$EXPECTED_PIPELINE" | grep -c .) middleware in 4 subgraphs and $(printf '%s\n' "$EXPECTED_AUTHORIZED_PIPELINE" | grep -c .) in the 3 that authorize (accounts, reviews, ordering), each in order"
+
+# Reviews specifically, because it is the service chapter 3 walked and the one
+# whose log the rest of this section reads. It authorizes since chapter 15, so
+# the list it is held to is the longer one.
 LOGGED_PIPELINE="$(sed -n 's/^ *[0-9][0-9]*\. \([^ ][^ ]*\) *$/\1/p' "$(subgraph_log reviews)" 2>/dev/null)"
 
 if [ -z "$LOGGED_PIPELINE" ]; then
@@ -1650,19 +1812,20 @@ Program.cs, and registered after AddGraphQL().
 $(log_tail)"
 fi
 
-if [ "$LOGGED_PIPELINE" != "$EXPECTED_PIPELINE" ]; then
-    step_fail 'request pipeline' "The request pipeline is not the one chapter 3 prints.
+if [ "$LOGGED_PIPELINE" != "$EXPECTED_AUTHORIZED_PIPELINE" ]; then
+    step_fail 'request pipeline' "The request pipeline is not the one chapter 3 prints, extended by chapter 15.
 
 Expected:
-$EXPECTED_PIPELINE
+$EXPECTED_AUTHORIZED_PIPELINE
 
 Found:
 $LOGGED_PIPELINE
 
-The order is the spine of chapter 3. Do not reorder it to make this pass; work
-out what moved and why."
+Chapter 3 prints thirteen of these and counts them, and chapter 15 adds the two
+authorization middleware to this service. The order is the spine of chapter 3;
+do not reorder it to make this pass, work out what moved and why."
 fi
-step_ok 'request pipeline is the expected 13 middleware, in order'
+step_ok "reviews' request pipeline is the expected $(printf '%s\n' "$EXPECTED_AUTHORIZED_PIPELINE" | grep -c .) middleware, in order"
 
 # -- 6c. the request timeline -----------------------------------------------
 
@@ -1756,6 +1919,11 @@ elif [ -z "$NEWMAN_BIN" ]; then
 else
     # Every URL is overridden rather than trusted: the environment file names
     # the default ports, and this script can be pointed elsewhere.
+    #
+    # Chapter 15 adds the signing key rather than a token. Five of this
+    # collection's requests reach a guarded field and four of them pick the
+    # customer they act as in a pre-request script, so there is no identifier to
+    # mint against before newman starts and the collection signs its own.
     if [ "$NEWMAN_VIA_NPX" -eq 1 ]; then
         "$NEWMAN_BIN" --no newman run "$POSTMAN_COLLECTION" \
             --environment "$POSTMAN_ENVIRONMENT" \
@@ -1765,6 +1933,7 @@ else
             --env-var "accountsUrl=$MOSAIC_ACCOUNTS_URL" \
             --env-var "reviewsUrl=$MOSAIC_REVIEWS_URL" \
             --env-var "orderingUrl=$MOSAIC_ORDERING_URL" \
+            --env-var "jwtSecret=$MOSAIC_JWT_SECRET" \
             --bail
     else
         "$NEWMAN_BIN" run "$POSTMAN_COLLECTION" \
@@ -1775,6 +1944,7 @@ else
             --env-var "accountsUrl=$MOSAIC_ACCOUNTS_URL" \
             --env-var "reviewsUrl=$MOSAIC_REVIEWS_URL" \
             --env-var "orderingUrl=$MOSAIC_ORDERING_URL" \
+            --env-var "jwtSecret=$MOSAIC_JWT_SECRET" \
             --bail
     fi
     if [ $? -ne 0 ]; then
@@ -2027,10 +2197,10 @@ and the query plan assertions are the listing it prints.'
             node "$ROUTER_CASES"
             if [ $? -ne 0 ]; then
                 step_fail 'router cases' 'scripts/router-cases.mjs failed.
-One of the three router behaviours chapter 10 describes has changed. The output
+One of the router behaviours chapters 10 and 15 describe has changed. The output
 above says which. Fix the chapter, not the assertion.'
             fi
-            step_ok 'the router behaves the three ways chapter 10 says it does'
+            step_ok 'the router behaves the five ways chapters 10 and 15 say it does'
         fi
 
         # -- chapter 11 -----------------------------------------------------
@@ -2267,15 +2437,26 @@ PY
         # reviewers until one of them does. Chapter 8's open item says the same
         # thing about the same seed data: a fair description of the schema
         # rather than a workaround, and fragile.
+        #
+        # A token per candidate since chapter 15, for the same reason the direct
+        # walk in section 5g needs one, and the customer whose token found the
+        # order is kept: the node step below asks for that order through
+        # Query.node, and the reference resolver behind it hands an order only
+        # to the person who placed it.
         node_order_id=''
+        node_order_owner_token=''
         for candidate in $(printf '%s' "$node_author_ids" | tr ',' ' '); do
+            mint_mosaic_token "$candidate"
             printf '{"query":"{ ordersByCustomer(customerId: \\"%s\\") { id } }"}' "$candidate" \
                 > "$TEMP_DIR/node-orders-request.json"
             post_graphql "$ROUTER_URL" "$TEMP_DIR/node-orders-request.json" \
-                "$TEMP_DIR/node-orders.json" 'node identifiers'
+                "$TEMP_DIR/node-orders.json" 'node identifiers' "$MOSAIC_TOKEN"
             node_order_id="$(python3 -c 'import json,sys; o=(json.load(open(sys.argv[1], encoding="utf-8")).get("data") or {}).get("ordersByCustomer") or []; print(o[0]["id"] if o else "")' \
                 "$TEMP_DIR/node-orders.json" | tr -d '\r')"
-            [ -n "$node_order_id" ] && break
+            if [ -n "$node_order_id" ]; then
+                node_order_owner_token="$MOSAIC_TOKEN"
+                break
+            fi
         done
 
         if [ -z "$node_order_id" ]; then
@@ -2285,18 +2466,26 @@ PY
         # One field per type, and each owned by a service other than nodes:
         # title is catalog's, displayName is accounts', rating is reviews' and
         # placedAt is ordering's.
-        for expectation in "Product:title:$node_product_id" \
-                           "Customer:displayName:$node_customer_id" \
-                           "Review:rating:$node_review_id" \
-                           "Order:placedAt:$node_order_id"; do
+        #
+        # Three of the four are still answered to anybody, which is the right
+        # answer: a product, a review and a customer's display name are public
+        # in this graph. The fourth is not, since chapter 15, and needs the
+        # token of the customer who placed the order - twice over, because
+        # Mosaic.Nodes refuses to decode an Order for a stranger and Ordering's
+        # reference resolver refuses to hand one over.
+        for expectation in "Product:title:$node_product_id:" \
+                           "Customer:displayName:$node_customer_id:" \
+                           "Review:rating:$node_review_id:" \
+                           "Order:placedAt:$node_order_id:$node_order_owner_token"; do
             node_type="$(printf '%s' "$expectation" | cut -d: -f1)"
             node_field="$(printf '%s' "$expectation" | cut -d: -f2)"
             node_id="$(printf '%s' "$expectation" | cut -d: -f3)"
+            node_token="$(printf '%s' "$expectation" | cut -d: -f4-)"
 
             printf '{"query":"{ node(id: \\"%s\\") { __typename ... on %s { %s } } }"}' \
                 "$node_id" "$node_type" "$node_field" > "$TEMP_DIR/node-request.json"
             post_graphql "$ROUTER_URL" "$TEMP_DIR/node-request.json" \
-                "$TEMP_DIR/node-answer.json" "node($node_type)"
+                "$TEMP_DIR/node-answer.json" "node($node_type)" "$node_token"
 
             node_answer="$(python3 - "$TEMP_DIR/node-answer.json" "$node_field" <<'PY'
 import json, sys
@@ -2514,12 +2703,14 @@ Accounts while the subscription is open."
                     --environment "$REALTIME_POSTMAN_ENV" \
                     --env-var "routerUrl=$ROUTER_URL" \
                     --env-var "reviewsUrl=$MOSAIC_REVIEWS_URL" \
+                    --env-var "jwtSecret=$MOSAIC_JWT_SECRET" \
                     --bail
             else
                 "$NEWMAN_BIN" run "$REALTIME_POSTMAN" \
                     --environment "$REALTIME_POSTMAN_ENV" \
                     --env-var "routerUrl=$ROUTER_URL" \
                     --env-var "reviewsUrl=$MOSAIC_REVIEWS_URL" \
+                    --env-var "jwtSecret=$MOSAIC_JWT_SECRET" \
                     --bail
             fi
             if [ $? -ne 0 ]; then
@@ -2530,6 +2721,127 @@ already reviewed the first product, which the first request in the collection
 goes looking for.'
             fi
             step_ok 'the realtime collection passes against the router'
+        fi
+
+        # -- 8k. chapter 15: who the graph answers -----------------------
+
+        # Two scripts, for the split this repository has settled into. The
+        # cases compose and read what the composer wrote; the run asks a live
+        # graph and reads what it answered. Neither can do the other's job
+        # here: composition cannot show that a subscription is
+        # unauthenticated, and a running graph cannot show that @policy was
+        # discarded without a word.
+        if [ ! -f "$AUTH_CASES" ]; then
+            step_skip 'authorization cases' 'scripts/auth-cases.mjs does not exist yet'
+        elif ! command -v node >/dev/null 2>&1; then
+            step_fail 'authorization cases' 'node is not on PATH; it is needed to run scripts/auth-cases.mjs.'
+        else
+            node "$AUTH_CASES"
+            if [ $? -ne 0 ]; then
+                step_fail 'authorization cases' 'scripts/auth-cases.mjs exited non-zero; its output above says which case moved.
+Every one of them is a sentence in chapter 15. A case that has started passing
+differently means the composer changed, and the chapter is what needs
+correcting.'
+            fi
+            step_ok 'the five authorization composition cases behave as chapter 15 describes'
+        fi
+
+        # The counted half, and the reason router/config.yaml turns pre-fetch
+        # field authorization on. An anonymous request for a field carrying
+        # @authenticated must cost the owning subgraph nothing at all: with the
+        # setting off, the router fetches the data and then discards it, which
+        # is one wasted request per refused field and one more process that
+        # briefly held data the caller was never allowed.
+        prefetch_before="$(grep -c 'Mosaic\.RequestTimeline' "$(subgraph_log accounts)" 2>/dev/null || echo 0)"
+
+        printf '{"query":"query($id: ID!) { customerById(id: $id) { displayName } }","variables":{"id":"%s"}}' \
+            "$customer_key" > "$TEMP_DIR/refused-request.json"
+        curl -sS -o "$TEMP_DIR/refused.json" -w '%{http_code}' \
+            --max-time 60 \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            --data-binary "@$TEMP_DIR/refused-request.json" \
+            "$ROUTER_URL/graphql" >/dev/null
+        sleep 1
+
+        if ! grep -q 'Unauthorized to load field' "$TEMP_DIR/refused.json" 2>/dev/null; then
+            step_fail 'pre-fetch authorization' "An anonymous request for a guarded field was not refused by the router.
+It answered:
+
+$(cat "$TEMP_DIR/refused.json" 2>/dev/null)"
+        fi
+
+        prefetch_after="$(grep -c 'Mosaic\.RequestTimeline' "$(subgraph_log accounts)" 2>/dev/null || echo 0)"
+        prefetch_delta=$((prefetch_after - prefetch_before))
+        if [ "$prefetch_delta" -ne 0 ]; then
+            step_fail 'pre-fetch authorization' "Accounts served $prefetch_delta requests for a field the router had already refused.
+authorization.enable_pre_fetch_field_authorization in router/config.yaml is what
+makes that zero, and chapter 15 measures the difference: with the setting off
+this is one. If it has become one again, the setting is gone from the config or
+the router stopped honouring it."
+        fi
+        step_ok 'a refused field costs its subgraph nothing (pre-fetch authorization is on and working)'
+
+        if [ ! -f "$AUTH_RUN" ]; then
+            step_skip 'authorization run' 'scripts/auth-run.mjs does not exist yet'
+        elif ! command -v node >/dev/null 2>&1; then
+            step_fail 'authorization run' 'node is not on PATH; it is needed to run scripts/auth-run.mjs.'
+        else
+            node "$AUTH_RUN" --router "$ROUTER_URL" \
+                --accounts "$MOSAIC_ACCOUNTS_URL" --ordering "$MOSAIC_ORDERING_URL"
+            if [ $? -ne 0 ]; then
+                step_fail 'authorization run' 'scripts/auth-run.mjs exited non-zero; its output above names the check.
+These are the fifteen things chapter 15 says the running graph does about
+identity, including the two that are findings rather than features: a
+subscription has no identity at all, and the refusal of a guarded field inside
+one comes from the subgraph rather than from the router.'
+            fi
+            step_ok 'the fifteen runtime authorization checks pass'
+        fi
+
+        # -- 8l. chapter 15 in Postman ------------------------------------
+
+        if [ ! -f "$AUTH_POSTMAN" ] || [ ! -f "$AUTH_POSTMAN_ENV" ]; then
+            step_skip 'auth postman' 'the auth collection or its environment is missing from postman/'
+        elif [ -z "$NEWMAN_BIN" ]; then
+            step_skip 'auth postman' 'newman is not installed - run npm install first'
+        else
+            # The collection mints nothing: newman has no way to sign a JWT and
+            # a pre-request script that did would be a second implementation of
+            # mint-token.mjs to keep in step. So the tokens are handed in as
+            # environment variables, minted here, by the script that already
+            # knows how.
+            mint_mosaic_token "$customer_key"
+            auth_token="$MOSAIC_TOKEN"
+            mint_mosaic_token "$customer_key" 'reviews:write'
+            auth_scopeless_token="$MOSAIC_TOKEN"
+
+            if [ "$NEWMAN_VIA_NPX" -eq 1 ]; then
+                "$NEWMAN_BIN" --no newman run "$AUTH_POSTMAN" \
+                    --environment "$AUTH_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --env-var "accountsUrl=$MOSAIC_ACCOUNTS_URL" \
+                    --env-var "customerId=$customer_key" \
+                    --env-var "token=$auth_token" \
+                    --env-var "scopelessToken=$auth_scopeless_token" \
+                    --bail
+            else
+                "$NEWMAN_BIN" run "$AUTH_POSTMAN" \
+                    --environment "$AUTH_POSTMAN_ENV" \
+                    --env-var "routerUrl=$ROUTER_URL" \
+                    --env-var "accountsUrl=$MOSAIC_ACCOUNTS_URL" \
+                    --env-var "customerId=$customer_key" \
+                    --env-var "token=$auth_token" \
+                    --env-var "scopelessToken=$auth_scopeless_token" \
+                    --bail
+            fi
+            if [ $? -ne 0 ]; then
+                step_fail 'auth postman' 'newman failed; its output above says which request failed.
+Every request in this collection is the same field asked four ways: anonymously,
+with a token that lacks the scope, with one that has it, and straight at the
+subgraph with no router in front.'
+            fi
+            step_ok 'the authorization collection passes against the router and the subgraph'
         fi
 
         # Down rather than stop, and now rather than in the trap, because the

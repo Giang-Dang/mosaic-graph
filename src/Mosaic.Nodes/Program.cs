@@ -1,9 +1,19 @@
 using Mosaic.Nodes;
 using Mosaic.ServiceDefaults;
+using Mosaic.ServiceDefaults.Security;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMosaicServiceDefaults();
+
+// Chapter 15. The service that owns no domain still has to know who is asking,
+// because Query.node is the one field in the graph that can be pointed at
+// anything. It authenticates and does not authorize: there is no
+// AddMosaicAuthorization() below and no [Authorize] anywhere in this project,
+// because every rule this service could state would be a rule about a type
+// rather than about a row, and one of those is written by hand in
+// Ordering/Types/OrderNode.cs.
+builder.Services.AddMosaicSecurity(builder.Configuration);
 
 // No database, so no connection string, no DbContext factory and no seeder.
 // This is the only one of the seven services whose Program.cs has nothing
@@ -26,6 +36,8 @@ builder.Services.AddMosaicPipelineReport();
 var app = builder.Build();
 
 app.UseMosaicServiceDefaults();
+
+app.UseMosaicSecurity();
 
 app.MapGraphQL();
 

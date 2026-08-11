@@ -5,6 +5,42 @@
     "description": "The half of chapter 14 that fits in a request and a response.\n\nDecision 43 of Federated GraphQL on .NET says why this collection is smaller than the chapter: newman speaks request and response, and a subscription is a connection that stays open. So the streaming half is scripts/subscription-run.mjs, which both verification scripts call, and this collection covers what is left - which turns out to be most of the chapter's surface.\n\nThe write path is here because it was never through the router before: chapters 5 to 13 exercised submitReview against the Reviews subgraph directly, and the plan a mutation gets is a different shape from a query's.\n\nThe two subscription fields are here as schema, not as streams. What a request can prove about them is that the graph declares both, that they are routed to different places, and that one of them belongs to a subgraph with no service behind it.\n\nStart the graph before running it:\n\n    docker compose up -d --build mosaic-db mosaic-nats mosaic-catalog \\\n        mosaic-pricing mosaic-inventory mosaic-accounts mosaic-reviews \\\n        mosaic-ordering mosaic-nodes mosaic-router\n\nOne request writes a review, so a second run against the same database submits a second one. Both are accepted, because they are by different customers.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Chapter 15. This collection signs its own token, for the same reason",
+          "// postman/mosaic-subgraphs does: the one request below that writes chooses",
+          "// the customer it acts as in a pre-request script, so there is no",
+          "// identifier for the verification script to mint against before newman",
+          "// starts. The two collections share this script verbatim, and both can",
+          "// still drift from scripts/mint-token.mjs, which nothing checks.",
+          "const secret = pm.environment.get('jwtSecret') || pm.collectionVariables.get('jwtSecret');",
+          "",
+          "const base64url = (bytes) => CryptoJS.enc.Base64.stringify(bytes)",
+          "  .replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
+          "const encode = (text) => base64url(CryptoJS.enc.Utf8.parse(text));",
+          "",
+          "mosaicToken = function (customerId, scopes) {",
+          "  const header = encode(JSON.stringify({ alg: 'HS256', typ: 'JWT', kid: 'mosaic-dev' }));",
+          "  const now = Math.floor(Date.now() / 1000);",
+          "  const payload = encode(JSON.stringify({",
+          "    iss: 'mosaic',",
+          "    aud: 'mosaic-graph',",
+          "    sub: customerId,",
+          "    scope: scopes || 'orders:read customers:read reviews:write',",
+          "    iat: now,",
+          "    exp: now + 3600",
+          "  }));",
+          "  const signature = base64url(CryptoJS.HmacSHA256(header + '.' + payload, secret));",
+          "  return 'Bearer ' + header + '.' + payload + '.' + signature;",
+          "};"
+        ]
+      }
+    }
+  ],
   "variable": [
     {
       "key": "productId",
@@ -399,6 +435,17 @@
               "pm.collectionVariables.set(\"submittedReviewId\", payload.review.id);"
             ]
           }
+        },
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Chapter 15. submitReview refuses a review signed in somebody else's",
+              "// name, so the token has to name the customer this request writes as.",
+              "pm.variables.set('authToken', mosaicToken(pm.collectionVariables.get('customerId')));"
+            ]
+          }
         }
       ],
       "request": {
@@ -411,6 +458,10 @@
           {
             "key": "Accept",
             "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "{{authToken}}"
           }
         ],
         "body": {

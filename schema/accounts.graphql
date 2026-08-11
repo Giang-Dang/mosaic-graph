@@ -1,13 +1,15 @@
 schema
   @link(
     url: "https://specs.apollo.dev/federation/v2.6"
-    import: ["@key", "@tag", "FieldSet"]
+    import: ["@authenticated", "@key", "@requiresScopes", "@tag", "FieldSet"]
   ) {
   query: Query
 }
 
 type Query {
   customerById(id: ID!): Customer
+    @authorize(policy: "CustomersRead")
+    @requiresScopes(scopes: [["customers:read"]])
   _service: _Service!
   _entities(representations: [_Any!]!): [_Entity]!
 }
@@ -15,7 +17,7 @@ type Query {
 type Customer implements Node @key(fields: "id") {
   id: ID!
   displayName: String!
-  email: String!
+  email: String! @authenticated @authorize
 }
 
 "This type provides a field named sdl: String! which exposes the SDL of the service's schema. This SDL (schema definition language) is a printed version of the service's schema including the annotations of federation directives. This SDL does not include the additions of the federation spec."
@@ -31,11 +33,39 @@ interface Node {
 "Union of all types that key directive applied. This information is needed by the Apollo federation gateway."
 union _Entity = Customer
 
+"Defines when a policy shall be executed."
+enum ApplyPolicy {
+  "Before the resolver was executed."
+  BEFORE_RESOLVER
+  "After the resolver was executed."
+  AFTER_RESOLVER
+  "The policy is applied in the validation step before the execution."
+  VALIDATION
+}
+
 "Scalar representing a set of fields."
 scalar FieldSet
 
 "The _Any scalar is used to pass representations of entities from external services into the root _entities field for execution. Validation of the _Any scalar is done by matching the __typename and @external fields defined in the schema."
 scalar _Any
+
+"Indicates to composition that the target element is accessible only to the authenticated supergraph users."
+directive @authenticated on
+  | SCALAR
+  | OBJECT
+  | FIELD_DEFINITION
+  | INTERFACE
+  | ENUM
+
+"The authorize directive."
+directive @authorize(
+  "The name of the authorization policy that determines access to the annotated resource."
+  policy: String
+  "Roles that are allowed to access the annotated resource."
+  roles: [String!]
+  "Defines when the authorize directive shall be applied. By default the authorize directive is applied before the resolver is executed."
+  apply: ApplyPolicy! = BEFORE_RESOLVER
+) repeatable on OBJECT | FIELD_DEFINITION
 
 "Used to indicate a combination of fields that can be used to uniquely identify and fetch an object or interface."
 directive @key(fields: FieldSet!, resolvable: Boolean = true) repeatable on
@@ -49,3 +79,11 @@ directive @link(
   "Gets optional list of imported element names."
   import: [String!]
 ) repeatable on SCHEMA
+
+"Indicates to composition that the target element is accessible only to the authenticated supergraph users with the appropriate JWT scopes."
+directive @requiresScopes(scopes: [[String!]!]!) on
+  | SCALAR
+  | OBJECT
+  | FIELD_DEFINITION
+  | INTERFACE
+  | ENUM

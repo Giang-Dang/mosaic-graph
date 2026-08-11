@@ -1,0 +1,361 @@
+{
+  "info": {
+    "_postman_id": "7e2c9a41-3f68-4b52-9d17-8a6c4e2b91f0",
+    "name": "Mosaic auth - chapter 15",
+    "description": "The half of chapter 15 that fits in a request and a response.\n\nThis collection mints nothing. Newman has no way to sign a JWT, and a pre-request script that did would be a second implementation of scripts/mint-token.mjs to keep in step with the first. So every token this collection needs arrives as an environment variable, minted by whoever runs the collection:\n\n    node scripts/mint-token.mjs --customer <id>                        # token: all three scopes\n    node scripts/mint-token.mjs --customer <id> --scopes reviews:write # scopelessToken\n\nFour requests ask the same field, Customer.email through Query.customerById, four ways: anonymously, with a token that lacks the scope, with one that holds it, and straight at Accounts with no router in front at all. That last one is the request that shows the rule is enforced twice, in two vocabularies - the router answers UNAUTHORIZED_FIELD_OR_TYPE out of the composed @authenticated and @requiresScopes directives, Accounts answers AUTH_NOT_AUTHENTICATED out of its own [Authorize] attribute - and that the router is not the only door.\n\nWhat this collection cannot carry is scripts/auth-cases.mjs (the composition half) or scripts/auth-run.mjs (the parts of the runtime half that need a fresh token per candidate, a WebSocket, or a chosen token lifetime). Both verification scripts run all three.\n\nStart the graph before running it:\n\n    docker compose up -d --build mosaic-db mosaic-nats mosaic-catalog \\\n        mosaic-pricing mosaic-inventory mosaic-accounts mosaic-reviews \\\n        mosaic-ordering mosaic-nodes mosaic-router",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Anonymous, through the router",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "// Customer.email carries @authenticated, composed from Mosaic's own",
+              "// [Authorize] attribute. The router enforces it before any subgraph",
+              "// is asked, which is why this is refused rather than merely null.",
+              "pm.test(\"the router refuses the field to an anonymous caller\", function () {",
+              "    pm.expect(body.errors, \"errors\").to.be.an(\"array\").that.is.not.empty;",
+              "    pm.expect(body.errors[0].message).to.include(\"Unauthorized to load field\");",
+              "    pm.expect(body.errors[0].extensions.code).to.eql(\"UNAUTHORIZED_FIELD_OR_TYPE\");",
+              "});",
+              "",
+              "pm.test(\"the field itself answers null\", function () {",
+              "    pm.expect(body.data.customerById).to.be.null;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($id: ID!) { customerById(id: $id) { displayName } }\",\"variables\":{\"id\":\"{{customerId}}\"}}"
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "A token without the scope",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"the router refuses the field and names the scope it wanted\", function () {",
+              "    pm.expect(body.errors, \"errors\").to.be.an(\"array\").that.is.not.empty;",
+              "    pm.expect(body.errors[0].message).to.include(\"Unauthorized to load field\");",
+              "});",
+              "",
+              "// scopelessToken holds reviews:write, not customers:read. The router",
+              "// names the scope that was missing rather than just refusing, which",
+              "// is what makes a caller's own mistake legible without a debugger.",
+              "pm.test(\"the missing scope is customers:read\", function () {",
+              "    const missing = body.extensions.authorization.missingScopes[0];",
+              "    pm.expect(missing.required[0][0]).to.eql(\"customers:read\");",
+              "});",
+              "",
+              "pm.test(\"the token's actual scope is reported too\", function () {",
+              "    pm.expect(body.extensions.authorization.actualScopes).to.include(\"reviews:write\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{scopelessToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($id: ID!) { customerById(id: $id) { displayName } }\",\"variables\":{\"id\":\"{{customerId}}\"}}"
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "A token with the scope",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "// token carries all three scopes, customers:read among them, so the",
+              "// field the previous two requests were refused answers here.",
+              "pm.test(\"the field answers\", function () {",
+              "    pm.expect(body.data.customerById.email).to.be.a(\"string\").that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($id: ID!) { customerById(id: $id) { displayName email } }\",\"variables\":{\"id\":\"{{customerId}}\"}}"
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Straight at Accounts, anonymously",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "// No router in front of this request at all. Accounts refuses the",
+              "// same field, in its own vocabulary - HotChocolate's default",
+              "// authorization error rather than the router's composed one - because",
+              "// Mosaic makes every service check the token itself. All seven",
+              "// subgraphs listen on a host port, so a client that skips the router",
+              "// is one curl away.",
+              "pm.test(\"Accounts refuses the field itself\", function () {",
+              "    pm.expect(body.errors, \"errors\").to.be.an(\"array\").that.is.not.empty;",
+              "    pm.expect(body.errors[0].message).to.include(\"The current user is not authorized to access this resource\");",
+              "    pm.expect(body.errors[0].extensions.code).to.eql(\"AUTH_NOT_AUTHENTICATED\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($id: ID!) { customerById(id: $id) { displayName } }\",\"variables\":{\"id\":\"{{customerId}}\"}}"
+        },
+        "url": {
+          "raw": "{{accountsUrl}}/graphql",
+          "host": [
+            "{{accountsUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Straight at Accounts, with the token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "pm.test(\"Accounts answers the same caller once it presents the token\", function () {",
+              "    pm.expect(body.data.customerById.email).to.be.a(\"string\").that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"query($id: ID!) { customerById(id: $id) { email } }\",\"variables\":{\"id\":\"{{customerId}}\"}}"
+        },
+        "url": {
+          "raw": "{{accountsUrl}}/graphql",
+          "host": [
+            "{{accountsUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    },
+    {
+      "name": "The published schema still advertises what it enforces",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"responds 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "const body = pm.response.json();",
+              "",
+              "pm.test(\"no errors\", function () {",
+              "    pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+              "});",
+              "",
+              "const directives = body.data.__schema.directives.map(d => d.name);",
+              "",
+              "// Unlike chapter 14's @defer, which the composer accepts and the",
+              "// router quietly drops, @authenticated and @requiresScopes are two",
+              "// directives the graph keeps: the requests above are the router",
+              "// actually enforcing what these two say.",
+              "pm.test(\"the graph still declares authenticated and requiresScopes\", function () {",
+              "    pm.expect(directives).to.include(\"authenticated\");",
+              "    pm.expect(directives).to.include(\"requiresScopes\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"query\":\"{ __schema { directives { name } } }\"}"
+        },
+        "url": {
+          "raw": "{{routerUrl}}/graphql",
+          "host": [
+            "{{routerUrl}}"
+          ],
+          "path": [
+            "graphql"
+          ]
+        }
+      }
+    }
+  ]
+}

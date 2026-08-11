@@ -70,3 +70,131 @@ events:
     nats:
       - id: default
         url: "nats://host.docker.internal:4222"
+
+# Chapter 15. Who the caller is.
+#
+# The router validates the token before it plans anything, and what it learns
+# is what the @authenticated and @requiresScopes directives in the composed
+# config are checked against. Nothing below mentions a field: the graph carries
+# its own rules and this block only says how to read a token.
+#
+# A symmetric secret rather than a JWKS endpoint, because Mosaic has no identity
+# provider and standing one up would be a chapter about OAuth. The url form is
+# the one a deployment uses and is a two-line swap:
+#
+#   jwks:
+#     - url: https://your-idp/.well-known/jwks.json
+#       algorithms: ["RS256"]
+#       refresh_interval: 1m
+#
+# Note what this block does NOT log. Started with it, the router says exactly
+# what it says without it - there is no line at any level, debug included,
+# confirming that JWT validation is on. The way to find out is to send a bad
+# token and get a 401, or to send a good one and read the X-Authenticated-By
+# response header. A misspelled key here, by contrast, is a hard startup
+# failure with a JSON Schema error naming the exact path, which is the opposite
+# of how wgc treated a misspelled key in chapter 14.
+# header_key_id is not optional on the symmetric branch, and the router will
+# not start without it: the config schema is a oneOf, the url branch wants
+# `url`, and the secret branch wants `secret`, `symmetric_algorithm` and
+# `header_key_id` together. So every token Mosaic mints carries a `kid` header
+# with this value, and scripts/mint-token.mjs is where that happens.
+authentication:
+  jwt:
+    jwks:
+      - symmetric_algorithm: HS256
+        secret: "${MOSAIC_JWT_SECRET}"
+        header_key_id: mosaic-dev
+
+# Left at the defaults, written out, because both are decisions.
+#
+# require_authentication: false keeps the storefront public. Mosaic sells to
+# people who have not signed in, so a graph that refused anonymous requests
+# outright would be the wrong graph. Fields that need a caller say so
+# themselves, and the router refuses those to an anonymous request whatever
+# this setting is: an @authenticated field is denied because the caller has no
+# identity, not because the router requires one globally.
+#
+# reject_operation_if_unauthorized: false means an operation that asks for one
+# field it may not have gets the rest of its data and an error for that field,
+# rather than nothing. That is the friendlier answer and it is not obviously the
+# right one; chapter 25 revisits it with the rest of the hardening.
+#
+# enable_pre_fetch_field_authorization is the one that is NOT left at its
+# default, and it was turned on because of a measurement rather than on
+# principle. Off, which is how it ships, the router plans the operation, calls
+# the subgraph, gets the answer, and only then discards the field the caller was
+# never allowed: an anonymous request for Customer.email costs Accounts one
+# request that is thrown away, counted on the request timeline. On, the field is
+# refused before any fetch runs and the subgraph is not called at all.
+#
+# The saving is not really the round trip. It is that data a caller may not see
+# stops being loaded into a process on their behalf, which is a smaller blast
+# radius when something later goes wrong with how a response is assembled.
+authorization:
+  require_authentication: false
+  reject_operation_if_unauthorized: false
+  enable_pre_fetch_field_authorization: true
+
+# Chapter 7 measured that the router forwards no client header to a subgraph,
+# and chapter 15 is the first chapter that needs one to arrive.
+#
+# The rule is deliberately the blunt one: propagate the Authorization header
+# itself, so every subgraph gets the caller's token and validates it again.
+# WunderGraph's documentation recommends the other arrangement - do not forward
+# the token, and instead `set` a header derived from a claim:
+#
+#   - op: "set"
+#     name: "X-Mosaic-Customer"
+#     expression: "request.auth.isAuthenticated ? request.auth.claims.sub : ''"
+#
+# which is smaller on the wire, keeps the token in one process, and is what
+# Mosaic would do if its subgraphs were unreachable except through the router.
+# They are not: all seven listen on a host port, and a header a subgraph trusts
+# is a header anybody can send it. The cost of the choice made here is a
+# signature verification per subgraph per request; the cost of the other one is
+# that the whole model depends on a network boundary nothing in this repository
+# enforces.
+#
+# One rule covers both transports. The same propagate entry moves the header on
+# an ordinary HTTP subgraph fetch and on the WebSocket upgrade the router makes
+# for a subscription; there is no second, WebSocket-specific block for it.
+headers:
+  all:
+    request:
+      - op: propagate
+        named: Authorization
+
+# Chapter 15, and the block Mosaic does not have.
+#
+# A browser cannot set a header on a WebSocket upgrade. The WebSocket
+# constructor takes a url and a subprotocol list and that is all, and node's
+# built-in WebSocket is the same, so the Authorization header the rule above
+# propagates so neatly is a header a subscribing client cannot send. Cosmo's
+# answer is to read the token out of the first message instead:
+#
+#   websocket:
+#     authentication:
+#       from_initial_payload:
+#         enabled: true
+#         key: "Authorization"          # the property to read; Bearer prefix required
+#         export_token:
+#           enabled: true
+#           header_key: "Authorization" # written verbatim onto subgraph requests
+#
+# It is commented out because turning it on takes the storefront off the
+# internet. Measured, and isolated by adding and removing this block and
+# nothing else: with it, an anonymous `{ __typename }` over ordinary HTTP is
+# answered `401 unauthorized`, on a router whose require_authentication is
+# false. Nothing in the block mentions HTTP and it closes HTTP. It is the
+# fourth case in scripts/router-cases.mjs, so a release that fixes it fails the
+# gate and gets read rather than passing quietly.
+#
+# The second half of it, measured while the block was on: even then the router
+# does not apply that identity to its own field authorization. A subscription
+# selecting an @authenticated field is refused as "not authenticated" on every
+# event, while the same connection resolves public fields across a subgraph
+# boundary and the token itself arrives at Accounts correctly formed with its
+# Bearer prefix. So there is no configuration of 0.337.1 that gives Mosaic both
+# a public storefront and a subscription that can select a guarded field, and
+# the honest thing is to run without the block and say so in the chapter.

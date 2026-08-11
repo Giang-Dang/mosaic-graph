@@ -1,3 +1,6 @@
+using System.Security.Claims;
+using HotChocolate.ApolloFederation.Types;
+using HotChocolate.Authorization;
 using HotChocolate.Resolvers;
 using HotChocolate.Subscriptions;
 using Mosaic.Reviews.Accounts.Model;
@@ -5,6 +8,7 @@ using Mosaic.Reviews.Catalog.Model;
 using Mosaic.Reviews.Data;
 using Mosaic.Reviews.Model;
 using Mosaic.Reviews.Streams;
+using Mosaic.ServiceDefaults.Security;
 
 namespace Mosaic.Reviews.Types;
 
@@ -78,6 +82,24 @@ public static partial class ReviewMutations
     /// it has to.
     /// </para>
     /// </remarks>
+    /// <remarks>
+    /// <para>
+    /// Chapter 15 guarded this, and what it had been is worth stating plainly
+    /// because it survived ten chapters without anybody writing it down: the
+    /// mutation took a customer identifier as an argument and believed it. Any
+    /// client could post a review in any customer's name, and the graph had no
+    /// opinion about it. Nothing was broken; nothing had been asked.
+    /// </para>
+    /// <para>
+    /// The argument is still here, and the check below is what makes it
+    /// honest. Deleting it and taking the author from the token would be the
+    /// tighter schema, and it is a breaking change to an input type for the
+    /// benefit of a rule one line expresses. What is not defensible is the
+    /// middle state this field was in.
+    /// </para>
+    /// </remarks>
+    [Authenticated]
+    [Authorize(MosaicTokens.Policies.ReviewsWrite)]
     [Error<RatingOutOfRangeError>]
     [Error<DuplicateReviewError>]
     public static async Task<Review> SubmitReviewAsync(
@@ -88,9 +110,25 @@ public static partial class ReviewMutations
         ReviewsService reviews,
         ITopicEventSender sender,
         ReviewStreamPublisher stream,
+        ClaimsPrincipal? user,
         IResolverContext context,
         CancellationToken cancellationToken)
     {
+        // The same shape Ordering's two guards have: a scope says you may write
+        // reviews, and only this line says whose name goes on one.
+        var subject = MosaicSecurityDefaults.SubjectOrNull(user);
+
+        if (subject is null
+            || !CustomerKey.TryDecode(subject, context, out var caller)
+            || caller != customerId)
+        {
+            throw new GraphQLException(
+                ErrorBuilder.New()
+                    .SetMessage("You may only submit a review in your own name.")
+                    .SetCode("AUTH_NOT_AUTHORIZED")
+                    .Build());
+        }
+
         var review = await reviews.SubmitReviewAsync(
             productId,
             customerId,

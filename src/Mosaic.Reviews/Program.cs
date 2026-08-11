@@ -2,10 +2,15 @@ using Mosaic.Reviews;
 using Mosaic.Reviews.Data;
 using Mosaic.Reviews.Errors;
 using Mosaic.ServiceDefaults;
+using Mosaic.ServiceDefaults.Security;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMosaicServiceDefaults();
+
+// Chapter 15. The only writable service in the graph, and the only one holding
+// a WebSocket open for minutes at a time. Both facts land on this call.
+builder.Services.AddMosaicSecurity(builder.Configuration);
 
 builder.Services.AddReviewsDatabase(
     builder.Configuration.GetConnectionString("Reviews")
@@ -30,6 +35,7 @@ builder.Services.AddReviewStreams(
 // other four services need none of them.
 builder.AddGraphQL()
     .AddMosaicSubgraph()
+    .AddMosaicAuthorization()
     // No root field, despite having a mutation and a subscription. A review is
     // reached through the product it is about, or through the identifier of one
     // a client has just submitted, and neither is a root field on this service.
@@ -59,6 +65,8 @@ builder.Services.AddMosaicPipelineReport();
 var app = builder.Build();
 
 app.UseMosaicServiceDefaults();
+
+app.UseMosaicSecurity();
 
 // Server-sent events work through MapGraphQL with nothing added; graphql-ws
 // needs this line, and leaving it out fails at the handshake rather than at

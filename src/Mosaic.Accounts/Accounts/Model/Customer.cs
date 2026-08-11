@@ -1,5 +1,6 @@
 using HotChocolate.ApolloFederation.Resolvers;
 using HotChocolate.ApolloFederation.Types;
+using HotChocolate.Authorization;
 using HotChocolate.Resolvers;
 using Mosaic.Accounts.Data;
 
@@ -34,10 +35,41 @@ namespace Mosaic.Accounts.Model;
 /// <c>Unexpected Execution Error</c> with nothing warning about it.
 /// </para>
 /// </remarks>
+/// <param name="Id">The customer's identifier.</param>
+/// <param name="DisplayName">
+/// The name a review is signed with. Public, and it has to be: every product
+/// page in the graph reaches it through <c>Review.author</c>.
+/// </param>
+/// <param name="Email">
+/// The customer's email address, and the first field in this graph that is not
+/// everybody's business.
+/// </param>
 [Key("id")]
 public sealed record Customer(
     Guid Id,
     string DisplayName,
+    // Chapter 15. Two attributes from two packages saying what looks like the
+    // same thing, and neither one does the other's job.
+    //
+    // [Authenticated] is a federation directive. It prints @authenticated into
+    // this service's published SDL, the composer copies it into the router's
+    // field configuration, and the router refuses the field to a caller with no
+    // token. It enforces nothing here: HotChocolate.ApolloFederation references
+    // HotChocolate.Core and nothing else, so there is no path from this
+    // attribute to any authorization handler.
+    //
+    // [Authorize] is HotChocolate's own. It refuses the field in this process,
+    // and it is invisible to the composed graph: @authorize is printed in
+    // _service { sdl } and the composer drops it on the way to the client
+    // schema.
+    //
+    // So the first line protects the field for anyone arriving through the
+    // router and the second protects it for anyone arriving at port 5104. Both
+    // are needed because both doors exist. Nothing checks that they agree, and
+    // the day they stop agreeing is the day the router advertises a rule this
+    // service does not keep.
+    [property: Authenticated]
+    [property: Authorize]
     string Email)
 {
     /// <summary>

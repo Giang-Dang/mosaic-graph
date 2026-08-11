@@ -237,6 +237,17 @@ $SubscriptionRun    = Join-Path $RepoRoot 'scripts' 'subscription-run.mjs'
 $RealtimePostman    = Join-Path $RepoRoot 'postman' 'mosaic-realtime.postman_collection.json'
 $RealtimePostmanEnv = Join-Path $RepoRoot 'postman' 'mosaic-realtime.local.postman_environment.json'
 
+# Chapter 15. Two scripts and a collection, and the split between the first two
+# is the one this repository has settled into: auth-cases.mjs composes and reads
+# what the composer wrote, auth-run.mjs asks a live graph and reads what it
+# answered. The fourth artefact of this chapter is a case inside
+# scripts/router-cases.mjs, because what it measures is a property of a router
+# configuration rather than of a schema.
+$AuthCases          = Join-Path $RepoRoot 'scripts' 'auth-cases.mjs'
+$AuthRun            = Join-Path $RepoRoot 'scripts' 'auth-run.mjs'
+$AuthPostman        = Join-Path $RepoRoot 'postman' 'mosaic-auth.postman_collection.json'
+$AuthPostmanEnv     = Join-Path $RepoRoot 'postman' 'mosaic-auth.local.postman_environment.json'
+
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
 # Product.shippingCost, read off each subgraph's own request timeline. They are
@@ -459,6 +470,39 @@ $ExpectedPipeline = @(
     'OperationExecutionMiddleware'
 )
 
+# Chapter 15. The four services that do not call AddMosaicAuthorization still
+# assemble the thirteen above; the three that do assemble fifteen. This is not a
+# loosened assertion, it is a second exact one: adding authorization to a
+# HotChocolate service inserts two middleware into the pipeline chapter 3 walks,
+# and they do not go on the end. PrepareAuthorization goes in front of
+# validation and AuthorizeRequest goes behind it, which is what lets a policy
+# with apply: VALIDATION refuse a whole request before any resolver runs.
+#
+# Chapter 3's number is still thirteen and still correct for the service that
+# chapter measured. Say so if it is quoted again.
+$ExpectedAuthorizedPipeline = @(
+    'InstrumentationMiddleware'
+    'ExceptionMiddleware'
+    'TimeoutMiddleware'
+    'DocumentCacheMiddleware'
+    'DocumentParserMiddleware'
+    'HotChocolate.Authorization.Pipeline.PrepareAuthorization'
+    'DocumentValidationMiddleware'
+    'HotChocolate.Authorization.Pipeline.AuthorizeRequest'
+    'CostAnalyzerMiddleware'
+    'OperationCacheMiddleware'
+    'OperationResolverMiddleware'
+    'SkipWarmupExecutionMiddleware'
+    'OperationVariableCoercionMiddleware'
+    'ConcurrencyGateMiddleware'
+    'OperationExecutionMiddleware'
+)
+
+# Which of the seven turn GraphQL authorization on. Nodes authenticates and does
+# not authorize - it refuses a type to a stranger in a node resolver rather than
+# through a policy - so it keeps the thirteen.
+$AuthorizedSubgraphs = @('accounts', 'reviews', 'ordering')
+
 # ---------------------------------------------------------------------------
 # Step reporting
 # ---------------------------------------------------------------------------
@@ -638,6 +682,15 @@ $previousAspNetCoreEnvironment = $env:ASPNETCORE_ENVIRONMENT
 $aspNetCoreEnvironmentWasSet = $null -ne $previousAspNetCoreEnvironment
 $previousResetDatabase = $env:MOSAIC_RESET_DATABASE
 $resetDatabaseWasSet = $null -ne $previousResetDatabase
+
+# Chapter 15. Four of the seven services refuse to start without a signing key,
+# on purpose: a service that came up silently unable to validate a token would
+# refuse every guarded field and look like an authorization bug rather than a
+# missing variable. The gate therefore supplies the same development key
+# docker-compose.yml does, and a run that already has one in the environment
+# keeps it, which is how a reader checks this against a key of their own.
+$previousJwtSecret = $env:MOSAIC_JWT_SECRET
+$jwtSecretWasSet = $null -ne $previousJwtSecret
 $exitCode = 0
 
 Write-Host "mosaic verify - $RepoRoot"
@@ -658,6 +711,24 @@ try {
         Stop-Verify 'dotnet sdk' "dotnet --version exited with $LASTEXITCODE. global.json most likely pins an SDK that is not installed; the output above says which."
     }
     Write-Ok "dotnet sdk $sdkVersion"
+
+    # -- 1a2. the signing key -----------------------------------------------
+
+    if (-not $jwtSecretWasSet) {
+        if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+            Stop-Verify 'signing key' (Join-Lines @(
+                'node is not on PATH, and scripts/mint-token.mjs is what prints the'
+                'development signing key four of the services need to start.'
+                'Set MOSAIC_JWT_SECRET yourself, or install node.'))
+        }
+        $env:MOSAIC_JWT_SECRET = (& node (Join-Path $RepoRoot 'scripts' 'mint-token.mjs') --secret | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $env:MOSAIC_JWT_SECRET) {
+            Stop-Verify 'signing key' 'node scripts/mint-token.mjs --secret printed nothing.'
+        }
+        Write-Ok 'signing key taken from scripts/mint-token.mjs'
+    } else {
+        Write-Ok 'signing key taken from MOSAIC_JWT_SECRET in the environment'
+    }
 
     # -- 1b. the database ---------------------------------------------------
 
@@ -1079,15 +1150,37 @@ try {
     # -TimeoutSec is spelled that way for PowerShell 7.0; on 7.5 and later it is
     # an alias for -ConnectionTimeoutSeconds. Either way the service has already
     # answered /health by this point, so it is only a backstop.
+    # Chapter 15. A token for one customer, minted the way a reader mints one.
+    # Nothing here caches: a token is three lines of JSON and an HMAC, and a
+    # cache would be a place for an expired one to hide.
+    function Get-MosaicToken {
+        param([string] $CustomerId, [string] $Scopes)
+
+        $mintArgs = @((Join-Path $RepoRoot 'scripts' 'mint-token.mjs'), '--customer', $CustomerId)
+        if ($Scopes) { $mintArgs += @('--scopes', $Scopes) }
+
+        $token = (& node @mintArgs | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $token) {
+            Stop-Verify 'mint a token' (Join-Lines @(
+                'node scripts/mint-token.mjs did not print a token.'
+                'Chapter 15 gave three of the seven services something to check, and'
+                'every step below that reads a guarded field needs one.'))
+        }
+        return $token
+    }
+
     function Invoke-Gql {
-        param([string] $Url, [string] $Query, $Variables = $null, [string] $Step)
+        param([string] $Url, [string] $Query, $Variables = $null, [string] $Step, [string] $Token)
 
         $payload = @{ query = $Query }
         if ($Variables) { $payload.variables = $Variables }
 
+        $headers = @{ Accept = 'application/json' }
+        if ($Token) { $headers['Authorization'] = "Bearer $Token" }
+
         $response = Invoke-WebRequest `
             -Uri "$Url/graphql" -Method Post -ContentType 'application/json' `
-            -Headers @{ Accept = 'application/json' } `
+            -Headers $headers `
             -Body ($payload | ConvertTo-Json -Depth 12 -Compress) `
             -TimeoutSec 120 -SkipHttpErrorCheck
 
@@ -1161,8 +1254,15 @@ try {
     }
 
     $customerReps = @($authorKeys | ForEach-Object { @{ __typename = 'Customer'; id = $_ } })
+    # Chapter 15 put @authenticated and [Authorize] on Customer.email, and this
+    # query selects it, so it needs a token now. Any customer's will do: email
+    # is guarded by "are you somebody" rather than by "are you this person",
+    # which is a distinction the chapter spends a section on. The first
+    # representation's own identifier is used because it is one this script is
+    # already holding.
+    $entitiesToken = Get-MosaicToken -CustomerId $customerReps[0].id
     $customersPayload = Invoke-Gql -Url $MosaicAccountsUrl -Query $AccountsEntitiesQuery `
-        -Variables @{ representations = $customerReps } -Step 'accounts _entities'
+        -Variables @{ representations = $customerReps } -Step 'accounts _entities' -Token $entitiesToken
 
     $customers = @($customersPayload.data._entities)
     if ($customers.Count -ne $ExpectedDistinctCustomers) {
@@ -1266,13 +1366,17 @@ try {
         Stop-Verify 'orders' 'No review carried an author, so there is no customer key to follow.'
     }
 
+    # Chapter 15 made this field refuse anybody who is not the customer named in
+    # the argument, so the walk mints a token per candidate rather than asking
+    # once. That is the honest cost of the rule: a caller acting for somebody
+    # else no longer exists, including this script.
     $orders = @()
     $customerKey = $null
     foreach ($candidate in $customerKeys) {
         $ordersPayload = Invoke-Gql -Url $MosaicOrderingUrl `
             -Query ("{ ordersByCustomer(customerId: `"$candidate`") " +
                     '{ total { amount } lines { quantity product { id } } } }') `
-            -Step 'orders'
+            -Step 'orders' -Token (Get-MosaicToken -CustomerId $candidate)
         $orders = @($ordersPayload.data.ordersByCustomer)
         if ($orders.Count -gt 0) {
             $customerKey = $candidate
@@ -1387,18 +1491,41 @@ try {
     # AddMosaicSubgraph, and a service that assembled a different pipeline would
     # be a service whose registrations had drifted from the platform's.
     foreach ($name in $Subgraphs.Keys) {
+        $expectedForThisOne = if ($AuthorizedSubgraphs -contains $name) {
+            $ExpectedAuthorizedPipeline
+        } else {
+            $ExpectedPipeline
+        }
+
         $subgraphPipeline = @(
             [regex]::Matches((Get-LogText $Subgraphs[$name].Stdout), '(?m)^\s+\d+\. (\S+)\s*$') |
                 ForEach-Object { $_.Groups[1].Value })
-        if ($subgraphPipeline.Count -ne $ExpectedPipeline.Count) {
+        if ($subgraphPipeline.Count -ne $expectedForThisOne.Count) {
             Stop-Verify 'request pipeline' (Join-Lines @(
-                "The $name subgraph assembled $($subgraphPipeline.Count) middleware, not $($ExpectedPipeline.Count)."
+                "The $name subgraph assembled $($subgraphPipeline.Count) middleware, not $($expectedForThisOne.Count)."
                 "Found: $($subgraphPipeline -join ', ')."
                 ''
-                'All six call AddMosaicSubgraph and AddMosaicPipelineReport, so a'
-                'difference here is a difference in one service''s registrations.'))
+                'All seven call AddMosaicSubgraph and AddMosaicPipelineReport, so a'
+                'difference here is a difference in one service''s registrations. Since'
+                'chapter 15 three of them also call AddMosaicAuthorization, which adds'
+                'two middleware; $AuthorizedSubgraphs at the top of this file is the list.'))
+        }
+
+        for ($i = 0; $i -lt $expectedForThisOne.Count; $i++) {
+            if ($subgraphPipeline[$i] -ne $expectedForThisOne[$i]) {
+                Stop-Verify 'request pipeline' (Join-Lines @(
+                    "In $name, middleware $($i + 1) should be $($expectedForThisOne[$i]) but was $($subgraphPipeline[$i])."
+                    "Full pipeline: $($subgraphPipeline -join ', ')."
+                    ''
+                    'The order is the spine of chapter 3, and where chapter 15''s two'
+                    'authorization middleware sit inside it is that chapter''s. Work out'
+                    'what moved rather than reordering the list to match.'))
+            }
         }
     }
+    Write-Ok ("request pipelines: $($ExpectedPipeline.Count) middleware in " +
+        "$($Subgraphs.Count - $AuthorizedSubgraphs.Count) subgraphs and " +
+        "$($ExpectedAuthorizedPipeline.Count) in the $($AuthorizedSubgraphs.Count) that authorize, each in order")
 
     $logText = Get-LogText $reviewsStdout
 
@@ -1415,26 +1542,30 @@ try {
             (Get-LogTail $reviewsStdout)))
     }
 
-    if ($loggedPipeline.Count -ne $ExpectedPipeline.Count) {
+    # Reviews specifically, because it is the service chapter 3 walked and the
+    # one whose log the rest of this section reads. It authorizes since chapter
+    # 15, so the list it is held to is the longer one.
+    if ($loggedPipeline.Count -ne $ExpectedAuthorizedPipeline.Count) {
         Stop-Verify 'request pipeline' (Join-Lines @(
-            "Expected $($ExpectedPipeline.Count) middleware in the pipeline, found $($loggedPipeline.Count)."
+            "Expected $($ExpectedAuthorizedPipeline.Count) middleware in the pipeline, found $($loggedPipeline.Count)."
             "Found: $($loggedPipeline -join ', ')."
             ''
-            'Chapter 3 prints this list and counts it. If HotChocolate changed the'
-            'default pipeline, the chapter needs rewriting, not this assertion.'))
+            'Chapter 3 prints thirteen of these and counts them, and chapter 15 adds'
+            'the two authorization middleware to this service. If HotChocolate changed'
+            'the default pipeline, a chapter needs rewriting, not this assertion.'))
     }
 
-    for ($i = 0; $i -lt $ExpectedPipeline.Count; $i++) {
-        if ($loggedPipeline[$i] -ne $ExpectedPipeline[$i]) {
+    for ($i = 0; $i -lt $ExpectedAuthorizedPipeline.Count; $i++) {
+        if ($loggedPipeline[$i] -ne $ExpectedAuthorizedPipeline[$i]) {
             Stop-Verify 'request pipeline' (Join-Lines @(
-                "Middleware $($i + 1) should be $($ExpectedPipeline[$i]) but was $($loggedPipeline[$i])."
+                "Middleware $($i + 1) should be $($ExpectedAuthorizedPipeline[$i]) but was $($loggedPipeline[$i])."
                 "Full pipeline: $($loggedPipeline -join ', ')."
                 ''
                 'The order is the spine of chapter 3. Do not reorder it to make'
                 'this pass; work out what moved and why.'))
         }
     }
-    Write-Ok "request pipeline is the expected $($ExpectedPipeline.Count) middleware, in order"
+    Write-Ok "reviews' request pipeline is the expected $($ExpectedAuthorizedPipeline.Count) middleware, in order"
 
     # -- 6c. the request timeline ------------------------------------------
 
@@ -1542,6 +1673,11 @@ try {
             '--env-var', "accountsUrl=$MosaicAccountsUrl",
             '--env-var', "reviewsUrl=$MosaicReviewsUrl",
             '--env-var', "orderingUrl=$MosaicOrderingUrl",
+            # Chapter 15. Five of this collection's requests reach a guarded
+            # field, and four of them pick the customer they act as in a
+            # pre-request script, so the collection signs its own tokens and
+            # needs the key rather than a token.
+            '--env-var', "jwtSecret=$env:MOSAIC_JWT_SECRET",
             '--bail')
         & $newmanCommand @newmanArgs
         if ($LASTEXITCODE -ne 0) {
@@ -1801,10 +1937,11 @@ try {
                 Write-Ok 'the router answers the query neither subgraph can'
             }
 
-            # And the three things chapter 10 says are surprising, each one a
-            # router started on purpose against a config made for the case.
-            # Same arrangement as chapter 9's composition cases and for the same
-            # reason: one implementation, called by both verify scripts.
+            # And the router-configuration surprises, each one a router started
+            # on purpose against a config made for the case. Same arrangement as
+            # chapter 9's composition cases and for the same reason: one
+            # implementation, called by both verify scripts. Three of them are
+            # chapter 10's and two are chapter 15's.
             if (-not (Test-Path -LiteralPath $RouterCases)) {
                 Write-Skipped 'router cases' 'scripts/router-cases.mjs does not exist yet'
             } elseif (-not (Get-Command node -ErrorAction SilentlyContinue)) {
@@ -1814,10 +1951,10 @@ try {
                 if ($LASTEXITCODE -ne 0) {
                     Stop-Verify 'router cases' (Join-Lines @(
                         "scripts/router-cases.mjs exited with $LASTEXITCODE."
-                        'One of the three router behaviours chapter 10 describes has changed.'
+                        'One of the router behaviours chapters 10 and 15 describe has changed.'
                         'The output above says which. Fix the chapter, not the assertion.'))
                 }
-                Write-Ok 'the router behaves the three ways chapter 10 says it does'
+                Write-Ok 'the router behaves the five ways chapters 10 and 15 say it does'
             }
 
             # -- chapter 11 -------------------------------------------------
@@ -2016,12 +2153,20 @@ try {
   productById(id: "$($nodeIds.Product)") { reviews(first: 20) { nodes { author { id } } } }
 }
 "@
+            # A token per candidate since chapter 15, for the same reason the
+            # direct walk above needs one, and the customer whose token found
+            # the order is kept: the node step below asks for that order through
+            # Query.node, and the reference resolver behind it hands an order
+            # only to the person who placed it.
+            $orderOwnerToken = $null
             foreach ($reviewer in $reviewers.data.productById.reviews.nodes) {
-                $orders = Invoke-Gql -Url $MosaicRouterUrl -Step 'node identifiers' -Query @"
+                $candidateToken = Get-MosaicToken -CustomerId $reviewer.author.id
+                $orders = Invoke-Gql -Url $MosaicRouterUrl -Step 'node identifiers' -Token $candidateToken -Query @"
 { ordersByCustomer(customerId: "$($reviewer.author.id)") { id } }
 "@
                 if ($orders.data.ordersByCustomer.Count -gt 0) {
                     $nodeIds.Order = $orders.data.ordersByCustomer[0].id
+                    $orderOwnerToken = $candidateToken
                     break
                 }
             }
@@ -2032,14 +2177,21 @@ try {
             # One field per type, and each one owned by a service other than
             # nodes: title is catalog's, displayName is accounts', rating is
             # reviews' and placedAt is ordering's.
+            #
+            # Three of the four are still answered to anybody, which is the
+            # right answer: a product, a review and a customer's display name
+            # are public in this graph. The fourth is not, since chapter 15, and
+            # needs the token of the customer who placed the order - twice over,
+            # because Mosaic.Nodes refuses to decode an Order for a stranger and
+            # Ordering's reference resolver refuses to hand one over.
             $nodeExpectations = @(
                 @{ Type = 'Product';  Field = 'title' }
                 @{ Type = 'Customer'; Field = 'displayName' }
                 @{ Type = 'Review';   Field = 'rating' }
-                @{ Type = 'Order';    Field = 'placedAt' }
+                @{ Type = 'Order';    Field = 'placedAt'; Token = $orderOwnerToken }
             )
             foreach ($expectation in $nodeExpectations) {
-                $payload = Invoke-Gql -Url $MosaicRouterUrl -Step "node($($expectation.Type))" -Query @"
+                $payload = Invoke-Gql -Url $MosaicRouterUrl -Step "node($($expectation.Type))" -Token $expectation.Token -Query @"
 {
   node(id: "$($nodeIds[$expectation.Type])") {
     __typename
@@ -2232,6 +2384,9 @@ try {
                     '--environment', $RealtimePostmanEnv,
                     '--env-var', "routerUrl=$MosaicRouterUrl",
                     '--env-var', "reviewsUrl=$($Subgraphs['reviews'].Url)",
+                    # Chapter 15. The mutation in this collection writes, and a
+                    # write is signed for now.
+                    '--env-var', "jwtSecret=$env:MOSAIC_JWT_SECRET",
                     '--bail'))
                 if ($LASTEXITCODE -ne 0) {
                     Stop-Verify 'realtime postman' (Join-Lines @(
@@ -2242,6 +2397,111 @@ try {
                         'first request in the collection goes looking for.'))
                 }
                 Write-Ok 'the realtime collection passes against the router'
+            }
+
+            # -- 8k. chapter 15: who the graph answers ----------------------
+
+            # Two scripts, for the split this repository has settled into. The
+            # cases compose and read what the composer wrote; the run asks a
+            # live graph and reads what it answered. Neither can do the other's
+            # job here: composition cannot show that a subscription is
+            # unauthenticated, and a running graph cannot show that @policy was
+            # discarded without a word.
+            if (-not (Test-Path -LiteralPath $AuthCases)) {
+                Write-Skipped 'authorization cases' 'scripts/auth-cases.mjs does not exist yet'
+            } else {
+                & node $AuthCases
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'authorization cases' (Join-Lines @(
+                        "scripts/auth-cases.mjs exited with $LASTEXITCODE; its output above says which case moved."
+                        'Every one of them is a sentence in chapter 15. A case that has started'
+                        'passing differently means the composer changed, and the chapter is what'
+                        'needs correcting.'))
+                }
+                Write-Ok 'the five authorization composition cases behave as chapter 15 describes'
+            }
+
+            # The counted half, and the reason router/config.yaml turns
+            # pre-fetch field authorization on. An anonymous request for a field
+            # carrying @authenticated must cost the owning subgraph nothing at
+            # all: with the setting off the router fetches the data and then
+            # discards it, which is one wasted request per refused field and one
+            # more process that briefly held data the caller was never allowed.
+            $prefetchBefore = ([regex]::Matches(
+                (Get-LogText $Subgraphs['accounts'].Stdout), 'Mosaic\.RequestTimeline')).Count
+
+            $refused = Invoke-WebRequest -Uri "$MosaicRouterUrl/graphql" -Method Post `
+                -ContentType 'application/json' -Headers @{ Accept = 'application/json' } `
+                -Body (@{ query = "{ customerById(id: `"$customerKey`") { displayName } }" } |
+                    ConvertTo-Json -Compress) `
+                -TimeoutSec 60 -SkipHttpErrorCheck
+            Start-Sleep -Seconds 1
+
+            if ($refused.Content -notmatch 'Unauthorized to load field') {
+                Stop-Verify 'pre-fetch authorization' (Join-Lines @(
+                    'An anonymous request for a guarded field was not refused by the router.'
+                    "It answered: $($refused.Content)"))
+            }
+
+            $prefetchAfter = ([regex]::Matches(
+                (Get-LogText $Subgraphs['accounts'].Stdout), 'Mosaic\.RequestTimeline')).Count
+            $prefetchDelta = $prefetchAfter - $prefetchBefore
+            if ($prefetchDelta -ne 0) {
+                Stop-Verify 'pre-fetch authorization' (Join-Lines @(
+                    "Accounts served $prefetchDelta requests for a field the router had already refused."
+                    'authorization.enable_pre_fetch_field_authorization in router/config.yaml is'
+                    'what makes that zero, and chapter 15 measures the difference: with the'
+                    'setting off this is one. If it has become one again, the setting is gone'
+                    'from the config or the router stopped honouring it.'))
+            }
+            Write-Ok 'a refused field costs its subgraph nothing (pre-fetch authorization is on and working)'
+
+            if (-not (Test-Path -LiteralPath $AuthRun)) {
+                Write-Skipped 'authorization run' 'scripts/auth-run.mjs does not exist yet'
+            } else {
+                & node $AuthRun --router $MosaicRouterUrl `
+                    --accounts $Subgraphs['accounts'].Url --ordering $Subgraphs['ordering'].Url
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'authorization run' (Join-Lines @(
+                        "scripts/auth-run.mjs exited with $LASTEXITCODE; its output above names the check."
+                        'These are the fifteen things chapter 15 says the running graph does about'
+                        'identity, including the two that are findings rather than features: a'
+                        'subscription has no identity at all, and the refusal of a guarded field'
+                        'inside one comes from the subgraph rather than from the router.'))
+                }
+                Write-Ok 'the fifteen runtime authorization checks pass'
+            }
+
+            # -- 8l. chapter 15 in Postman ----------------------------------
+
+            if (-not (Test-Path -LiteralPath $AuthPostman) -or -not (Test-Path -LiteralPath $AuthPostmanEnv)) {
+                Write-Skipped 'auth postman' 'the auth collection or its environment is missing from postman/'
+            } elseif (-not $newmanCommand) {
+                Write-Skipped 'auth postman' 'newman is not installed - run npm install first'
+            } else {
+                # The collection mints nothing: newman has no way to sign a JWT
+                # and a pre-request script that did would be a second
+                # implementation of mint-token.mjs to keep in step. So the
+                # tokens are handed in as environment variables, minted here,
+                # by the script that already knows how.
+                $postmanOwner = $customerKey
+                & $newmanCommand @($newmanPrefix + @(
+                    'run', $AuthPostman,
+                    '--environment', $AuthPostmanEnv,
+                    '--env-var', "routerUrl=$MosaicRouterUrl",
+                    '--env-var', "accountsUrl=$($Subgraphs['accounts'].Url)",
+                    '--env-var', "customerId=$postmanOwner",
+                    '--env-var', "token=$(Get-MosaicToken -CustomerId $postmanOwner)",
+                    '--env-var', "scopelessToken=$(Get-MosaicToken -CustomerId $postmanOwner -Scopes 'reviews:write')",
+                    '--bail'))
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'auth postman' (Join-Lines @(
+                        "newman exited with $LASTEXITCODE; its output above says which request failed."
+                        'Every request in this collection is the same field asked four ways:'
+                        'anonymously, with a token that lacks the scope, with one that has it,'
+                        'and straight at the subgraph with no router in front.'))
+                }
+                Write-Ok 'the authorization collection passes against the router and the subgraph'
             }
 
             # Down rather than stop, and now rather than in the finally block,
@@ -2554,6 +2814,12 @@ try {
         $env:MOSAIC_RESET_DATABASE = $previousResetDatabase
     } else {
         Remove-Item Env:MOSAIC_RESET_DATABASE -ErrorAction SilentlyContinue
+    }
+
+    if ($jwtSecretWasSet) {
+        $env:MOSAIC_JWT_SECRET = $previousJwtSecret
+    } else {
+        Remove-Item Env:MOSAIC_JWT_SECRET -ErrorAction SilentlyContinue
     }
 
     if ($tempDir -and (Test-Path -LiteralPath $tempDir)) {
