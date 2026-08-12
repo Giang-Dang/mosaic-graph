@@ -70,6 +70,16 @@ const ACCESS_LOGS = `access_logs:
           expression: request.operation.planCacheHit
 `;
 
+// The other way to ask the same question. A debug setting puts five cache
+// results into response headers as HIT or MISS, which needs no log parsing at
+// all and is what a developer at a keyboard should reach for. It shares no code
+// with the expression path above, which is what makes it a second witness
+// rather than a second reading of the same one.
+const CACHE_HEADERS = `engine:
+  debug:
+    enable_cache_response_headers: true
+`;
+
 // ---------------------------------------------------------------------------
 // The cases
 // ---------------------------------------------------------------------------
@@ -184,7 +194,11 @@ const CASES = [
           problems.push(`no access-log line came back for the ${name} pair`);
           continue;
         }
-        evidence.push(`${name.padEnd(12)} ${left.planHash} vs ${right.planHash}  (${what})`);
+        // Two lines rather than one: the hashes are twenty digits each and a
+        // single line carrying both plus the description does not fit a
+        // printed page, which is where this output ends up.
+        evidence.push(`${name.padEnd(12)} varies ${what}`);
+        evidence.push(`${' '.repeat(12)} ${left.planHash} vs ${right.planHash}`);
         if (left.planHash === right.planHash) {
           problems.push(`two documents differing only in ${what} shared a plan cache key`);
         }
@@ -257,6 +271,40 @@ const CASES = [
       // cold one, and a reader should see it.
       const planner = traced1.extensions?.trace?.info?.planner_stats?.duration_nanoseconds;
       evidence.push(`traced-1 planner_stats: ${planner} ns (always a cold plan, never asserted)`);
+
+      // The second witness, through a mechanism that shares nothing with the
+      // access log above: a debug setting puts five cache results into response
+      // headers. It says one thing the log cannot, which is that the
+      // normalization cache still HITs on the request whose plan cache MISSes.
+      // So tracing bypasses one cache rather than starting the request over,
+      // and the chapter prints this contrast.
+      const headers = await ctx.router({ cacheHeaders: true });
+      const seen = [];
+      for (const [label, extra] of [
+        ['cold', {}], ['warm-1', {}], ['warm-2', {}],
+        ['traced', { 'X-WG-Trace': 'true' }],
+        ['planonly', { 'X-WG-Include-Query-Plan': 'true', 'X-WG-Skip-Loader': 'true' }],
+        ['warm-3', {}],
+      ]) {
+        const result = await headers.askRaw(label, document, extra);
+        const plan = result.headers.get('x-wg-execution-plan-cache');
+        const norm = result.headers.get('x-wg-normalization-cache');
+        seen.push({ label, plan, norm });
+        evidence.push(`${label.padEnd(9)} plan=${plan} normalization=${norm}`);
+      }
+
+      const wantedPlan = { cold: 'MISS', 'warm-1': 'HIT', 'warm-2': 'HIT', traced: 'MISS', planonly: 'MISS', 'warm-3': 'HIT' };
+      for (const { label, plan, norm } of seen) {
+        if (plan !== wantedPlan[label]) {
+          problems.push(`${label} reported x-wg-execution-plan-cache=${plan}, expected ${wantedPlan[label]}`);
+        }
+        // The contrast that makes the point: the traced request is not a new
+        // request, it is a request that skipped one cache.
+        if (label === 'traced' && norm !== 'HIT') {
+          problems.push(`the traced request reported x-wg-normalization-cache=${norm}, expected HIT: ` +
+            'if tracing has started bypassing normalization too, the chapter\'s contrast is gone');
+        }
+      }
 
       return { problems, evidence };
     },
@@ -351,7 +399,10 @@ async function withContext(fn) {
   let port = PORT;
 
   const context = {
-    async router() {
+    // `cacheHeaders` swaps the access-log fields for the debug setting that
+    // reports the same thing in response headers. Two mechanisms that share no
+    // code, which is why one case uses both.
+    async router({ cacheHeaders = false } = {}) {
       const id = `mosaic-planner-case-${containers.length}-${process.pid}`;
       const mine = port++;
       const execPath = join(dir, `supergraph-${containers.length}.json`);
@@ -370,7 +421,7 @@ async function withContext(fn) {
         // the whole line.
         'dev_mode: true',
         'log_level: info',
-        ACCESS_LOGS,
+        cacheHeaders ? CACHE_HEADERS : ACCESS_LOGS,
         '',
       ].join('\n'));
 
@@ -384,7 +435,7 @@ async function withContext(fn) {
       await waitForHealth(mine);
 
       return {
-        async ask(label, body, headers = {}) {
+        async askRaw(label, body, headers = {}) {
           const response = await fetch(`http://localhost:${mine}/graphql`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Mosaic-Case': label, ...headers },
@@ -394,6 +445,13 @@ async function withContext(fn) {
           if (json.errors) {
             throw new Error(`"${label}" came back with errors: ${JSON.stringify(json.errors).slice(0, 300)}`);
           }
+          // The body is consumed here, so hand back both halves rather than
+          // making a caller that wants headers send the request twice.
+          return { json, headers: response.headers };
+        },
+
+        async ask(label, body, headers = {}) {
+          const { json } = await this.askRaw(label, body, headers);
           return json;
         },
 

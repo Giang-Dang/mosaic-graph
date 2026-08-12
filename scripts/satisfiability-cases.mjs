@@ -143,6 +143,14 @@ function errorSentences(output) {
     .filter((line) => /^(The |Each instance|Extension error|Fatal)/.test(line));
 }
 
+// Cut to at most `limit` characters, on a word boundary, marking the cut.
+function shorten(text, limit) {
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()} ...`;
+}
+
 function namedRootFields(output) {
   return [...new Set([...output.matchAll(/The root type field "([^"]+)" is defined/g)].map((m) => m[1]))];
 }
@@ -281,7 +289,10 @@ const CASES = [
           'reviews marks averageRating shareable'),
       }));
       evidence.push(`incompatible-type: ${incompatible.size} distinct sentences, ${[...incompatible.values()].reduce((a, b) => a + b, 0)} lines`);
-      for (const [sentence, n] of incompatible) evidence.push(`  x${n}  ${sentence.slice(0, 92)}`);
+      // Truncated at a word boundary rather than mid-word: this output is what
+      // the chapter prints, and a line cut through the middle of a word reads
+      // as a defect in the tool rather than as a deliberately shortened quote.
+      for (const [sentence, n] of incompatible) evidence.push(`  x${n}  ${shorten(sentence, 72)}`);
 
       if (incompatible.size < 1) {
         problems.push('the incompatible-type edit produced no error sentences at all');
