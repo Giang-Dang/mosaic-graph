@@ -39,6 +39,14 @@
 # which reproduces the router behaviours chapters 10 and 15 call surprising. Set
 # MOSAIC_SKIP_ROUTER=1 to leave that out.
 #
+# Since chapter 17 it also checks two things nothing else here can see.
+# scripts/satisfiability-cases.mjs composes the schemas four times over, varying
+# which of catalog's root fields exist and which is declared first, and asserts
+# which route the composer blames each time. scripts/planner-cases.mjs starts
+# routers configured to log their own plan cache key, and asserts which
+# documents share one, that a traced request never hits the cache, and that a
+# repeated entity key goes out once.
+#
 # scripts/verify.ps1 is the same script for readers on Windows. Changes to one
 # belong in the other.
 #
@@ -195,6 +203,17 @@ AUTH_CASES="$REPO_ROOT/scripts/auth-cases.mjs"
 AUTH_RUN="$REPO_ROOT/scripts/auth-run.mjs"
 AUTH_POSTMAN="$REPO_ROOT/postman/mosaic-auth.postman_collection.json"
 AUTH_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-auth.local.postman_environment.json"
+
+# -- chapter 17's composer and planner ----------------------------------------
+
+# The same split one more time. satisfiability-cases.mjs composes files and
+# reads what the composer blamed; planner-cases.mjs starts routers and reads
+# what each one keyed its plan cache on. Neither has a Postman collection,
+# because what they measure is invisible to a request and a response: the first
+# is a message about a graph nobody can run, and the second is a hash the router
+# only reports if you ask it to log one.
+SATISFIABILITY_CASES="$REPO_ROOT/scripts/satisfiability-cases.mjs"
+PLANNER_CASES="$REPO_ROOT/scripts/planner-cases.mjs"
 
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
@@ -2210,6 +2229,31 @@ loosen.'
         step_ok 'the sixteen modelling behaviours chapter 13 prints are the ones wgc produces'
     fi
 
+    # -- 8b3a. which route the composer blames, chapter 17's subject ---------
+
+    # Chapter 9 measured that an unresolvable key is reported against one of
+    # catalog's four root fields returning a product, and could not say why.
+    # These two cases are the control: vary which root fields exist and which is
+    # declared first, and watch the message move. They also count how often the
+    # composer repeats itself, because chapter 9 read a line total as a fault
+    # total once already.
+    #
+    # No Docker and no running service: this composes files.
+    if [ ! -f "$SATISFIABILITY_CASES" ]; then
+        step_skip 'satisfiability cases' 'scripts/satisfiability-cases.mjs does not exist yet'
+    elif ! command -v node >/dev/null 2>&1; then
+        step_fail 'satisfiability cases' 'node is not on PATH; it is needed to run scripts/satisfiability-cases.mjs.'
+    else
+        node "$SATISFIABILITY_CASES"
+        if [ $? -ne 0 ]; then
+            step_fail 'satisfiability cases' 'scripts/satisfiability-cases.mjs failed.
+Either catalog'"'"'s root fields moved, in which case the case is right and chapter 17
+needs the new order, or wgc changed which routes it reports and how often. Both
+are findings; neither is a reason to loosen the assertion.'
+        fi
+        step_ok 'the composer blames the first route declared, and repeats itself as chapter 17 says'
+    fi
+
     # -- 8b4. the subscription transport, which is chapter 14's subject ------
 
     # Eight cases, and the only ones in this script that edit the composer's
@@ -2325,6 +2369,35 @@ One of the router behaviours chapters 10 and 15 describe has changed. The output
 above says which. Fix the chapter, not the assertion.'
             fi
             step_ok 'the router behaves the six ways chapters 10 and 15 say it does'
+        fi
+
+        # -- chapter 17 -----------------------------------------------------
+
+        # What the plan cache keys on, and what asking to see a plan costs.
+        # Four chapters asked a form of this and none could answer it, because a
+        # stock router publishes no cache metrics at all. These cases take the
+        # sharper route instead: the router is started with an access-log field
+        # carrying request.operation.queryPlanHash, so it reports its own cache
+        # key for every request.
+        #
+        # Every assertion is an equivalence class or a count. The one duration
+        # in the output is printed and never asserted, which is decision 62's
+        # line.
+        if [ ! -f "$PLANNER_CASES" ]; then
+            step_skip 'planner cases' 'scripts/planner-cases.mjs does not exist yet'
+        elif ! command -v node >/dev/null 2>&1; then
+            step_fail 'planner cases' 'node is not on PATH; it is needed to run scripts/planner-cases.mjs.'
+        else
+            node "$PLANNER_CASES"
+            if [ $? -ne 0 ]; then
+                step_fail 'planner cases' 'scripts/planner-cases.mjs failed.
+Something about normalization, the plan cache or entity batching has changed.
+The output above says which case. A router upgrade that makes field order stop
+splitting the cache key, or that stops deduplicating representations, is a
+better router and a wrong chapter 17: rewrite the chapter rather than loosening
+the assertion.'
+            fi
+            step_ok 'the plan cache keys on what chapter 17 says, and tracing still skips it'
         fi
 
         # -- chapter 11 -----------------------------------------------------

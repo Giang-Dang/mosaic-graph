@@ -33,6 +33,7 @@ Check out a tag to get the system as it stands at the end of that chapter.
 
 | `ch15` | 15. Identity and Authorization Across the Graph | The first tag where the graph refuses anybody. A symmetric-key JWT, minted by `scripts/mint-token.mjs`; `Customer.email`, `Query.customerById`, `Query.ordersByCustomer` and `submitReview` guarded; and the same rule written twice on purpose, once as a federation directive the router enforces and once as a `[Authorize]` the subgraph enforces, because all seven services listen on a host port. `Mosaic.Nodes` learns who is asking, so that `Query.node` cannot be pointed at somebody else's order, and Ordering's reference resolver learns whose order it is. Plus `scripts/auth-cases.mjs`, five cases about what a composer keeps and what it throws away, and `scripts/auth-run.mjs`, fifteen about what a running graph answers |
 | `ch16` | 16. Inside HotChocolate | No service changes by a line. `samples/executor-internals` is five in-process cases about the executor: a pure field costs no resolver task, `RunTask` counts no resolver, `AddAuthorization()` on its own defeats the validation cache, a warmup request fills the operation cache without executing anything, and thirty-two concurrent identical first-time requests compile once. Both verification scripts run it, and both gained a step that measures the third of those on the real graph: the four subgraphs that do not authorize skip validation on a document-cache hit and the three that do re-run it |
+| `ch17` | 17. Inside the Router and the Composer | No service changes by a line again, and the two case scripts are about the two processes nobody here wrote. `scripts/satisfiability-cases.mjs` composes the schemas four times over, varying which of Catalog's four root fields returning a product exist and which is declared first, and watches the composer blame a different route each time: it reports the first failing route, not every route that fails. `scripts/planner-cases.mjs` starts routers configured to log their own plan cache key, and settles what four earlier chapters asked - eleven documents differing in operation name, variable names, argument values and whitespace share one plan, while an alias, a change of field order, or a `!` on a declared variable each buy a second one. It also shows that the two headers which display a query plan take that request off the cache path entirely, and that a repeated entity key goes out once and comes back to both places |
 
 Later chapters add their tags here as they are written. The convention is `chNN`
 for the end-of-chapter state, and `chNN-<step>` if a chapter needs an
@@ -299,6 +300,29 @@ node scripts/measure-router.mjs --reload   # how long a recompose takes to land
 That one is deliberately not part of `verify.ps1`. Single-machine timings
 asserted in a gate fail on a busier laptop, which teaches nobody anything. Run
 it twice and compare the two runs before believing any difference.
+
+What the router keys its plan cache on is a third thing again, and chapter 17's
+cases read it directly rather than inferring it. The router will report
+`request.operation.queryPlanHash` as an access-log field, and that string is the
+cache key:
+
+```
+node scripts/planner-cases.mjs --list
+node scripts/planner-cases.mjs                                    # assert all four
+node scripts/planner-cases.mjs --print plan-key-splits-on-three-things
+```
+
+These need Docker and the seven subgraphs running. The one to read first is
+`tracing-never-hits-the-plan-cache`: `X-WG-Trace` and `X-WG-Include-Query-Plan`
+are the only two ways to see what the planner did, and both guarantee it was
+done, so the planning time in a trace is always the cold number.
+
+Chapter 17's composer half needs neither Docker nor a running service, because
+it composes files:
+
+```
+node scripts/satisfiability-cases.mjs --print satisfiability-names-the-first-route
+```
 
 `Product.id` is the field chapter 5 designed, unchanged: a Relay global
 identifier, base64, carrying the type name beside the key. Since chapter 8 it is

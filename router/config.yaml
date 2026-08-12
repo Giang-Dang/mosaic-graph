@@ -213,3 +213,33 @@ headers:
 # configurations differ in this block and in whether the connection has any
 # identity at all, and the two cannot be separated: with the block on, a
 # connection_init carrying no token is rejected outright.
+
+# Chapter 17, and the second block Mosaic does not ship.
+#
+# The router keeps seven caches in front of execution - the plan cache, three
+# around normalization, one for persisted operations, one for validation and one
+# for the operation hash. router/core/graph_server.go:930-954 at router@0.337.1
+# registers metrics for all seven by name, and the router publishes nothing
+# about any of them by default, because
+# telemetry.metrics.prometheus.graphql_cache is false unless you say otherwise.
+# That is why chapter 10 saw the Prometheus endpoint in the startup log and no
+# chapter before this one could see a single cache hit.
+#
+#   telemetry:
+#     metrics:
+#       prometheus:
+#         enabled: true
+#         listen_addr: "0.0.0.0:8088"
+#         graphql_cache: true
+#
+# Commented out rather than shipped, for the same reason as the block above:
+# nothing in this repository would read it. scripts/planner-cases.mjs takes a
+# different and sharper route to the same facts, asking for
+# request.operation.queryPlanHash and request.operation.planCacheHit as
+# access-log fields, which reports the actual cache key for each request rather
+# than a sampled counter for all of them. A setting no gate exercises is a
+# setting that rots.
+#
+# Turn it on if you are operating this graph rather than reading about it; it
+# also wants the port published, which docker-compose.yml does not do.
+# Chapter 23 owns observability and is where this stops being a comment.

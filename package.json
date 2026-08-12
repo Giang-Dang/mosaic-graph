@@ -14,6 +14,8 @@
     "verify:router": "node scripts/router-cases.mjs",
     "verify:entities": "node scripts/entity-cases.mjs",
     "verify:realtime": "node scripts/realtime-cases.mjs",
+    "verify:satisfiability": "node scripts/satisfiability-cases.mjs",
+    "verify:planner": "node scripts/planner-cases.mjs",
     "compose": "wgc router compose -i federation/mosaic.yaml -o federation/supergraph.json"
   },
   "devDependencies": {
