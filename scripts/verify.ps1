@@ -1954,7 +1954,7 @@ try {
                         'One of the router behaviours chapters 10 and 15 describe has changed.'
                         'The output above says which. Fix the chapter, not the assertion.'))
                 }
-                Write-Ok 'the router behaves the five ways chapters 10 and 15 say it does'
+                Write-Ok 'the router behaves the six ways chapters 10 and 15 say it does'
             }
 
             # -- chapter 11 -------------------------------------------------
@@ -2455,6 +2455,133 @@ try {
                     'from the config or the router stopped honouring it.'))
             }
             Write-Ok 'a refused field costs its subgraph nothing (pre-fetch authorization is on and working)'
+
+            # And the other half of the same setting, which the step above does
+            # not measure and which chapter 15 prints a three-row table for.
+            #
+            # The step above asks for a guarded ROOT field, and a root field is
+            # a whole fetch, so refusing it removes the fetch and the count is
+            # zero. A guarded field hanging off an entity the caller is also
+            # entitled to read is a different case: the fetch has to happen for
+            # the permitted field, the guarded one travels with it, and the
+            # subgraph's own [Authorize] is the only thing that refuses. That is
+            # the argument chapter 15 makes for writing every rule twice, so it
+            # is asserted rather than described.
+            #
+            # Six reads of one log and three requests differing in a few
+            # characters, so both are a scriptblock rather than written out
+            # three times.
+            $accountsRequests = {
+                ([regex]::Matches(
+                    (Get-LogText $Subgraphs['accounts'].Stdout), 'Mosaic\.RequestTimeline')).Count
+            }
+
+            $askAnonymously = {
+                param([string] $Selection)
+
+                $before = & $accountsRequests
+                $answer = Invoke-WebRequest -Uri "$MosaicRouterUrl/graphql" -Method Post `
+                    -ContentType 'application/json' -Headers @{ Accept = 'application/json' } `
+                    -Body (@{ query = "{ browseProducts(first: 1) { nodes { reviews(first: 1) { nodes { author { $Selection } } } } } }" } |
+                        ConvertTo-Json -Compress) `
+                    -TimeoutSec 60 -SkipHttpErrorCheck
+                # The log is being written by another process while we read it,
+                # so the risk is under-counting. Nothing else is talking to
+                # Accounts at this point, so over-counting is not possible.
+                Start-Sleep -Seconds 1
+                return [pscustomobject]@{
+                    Body  = $answer.Content
+                    Delta = (& $accountsRequests) - $before
+                }
+            }
+
+            # The control first. If browseProducts(first: 1) came back with a
+            # product that has no reviews, every row below would count zero and
+            # this step would pass by measuring nothing.
+            $entityPublic = & $askAnonymously 'displayName'
+            if ($entityPublic.Delta -ne 1) {
+                Stop-Verify 'entity-level authorization' (Join-Lines @(
+                    "The control cost Accounts $($entityPublic.Delta) requests, not 1."
+                    'This asks for a public field on a Customer reached through a review'
+                    'author, which is one entity fetch. A zero here means the seeded'
+                    'product has no reviews and the two rows below would prove nothing.'
+                    "It answered: $($entityPublic.Body)"))
+            }
+            if ($entityPublic.Body -notmatch '"displayName":"' -or
+                $entityPublic.Body -match '"author":null' -or
+                $entityPublic.Body -match 'Unauthorized to load field' -or
+                $entityPublic.Body -match 'AUTH_NOT_AUTHENTICATED') {
+                Stop-Verify 'entity-level authorization' (Join-Lines @(
+                    'The control did not serve a public field to an anonymous caller.'
+                    'Review.author and Customer.displayName are public on purpose: a'
+                    'storefront that stopped naming its reviewers would be the wrong graph.'
+                    "It answered: $($entityPublic.Body)"))
+            }
+
+            # The guarded field on its own. The whole fetch becomes removable,
+            # so the router refuses it and Accounts is never called.
+            $entityAlone = & $askAnonymously 'email'
+            if ($entityAlone.Delta -ne 0) {
+                Stop-Verify 'entity-level authorization' (Join-Lines @(
+                    "Accounts served $($entityAlone.Delta) requests for a guarded field selected on its own."
+                    'Nothing else was asked for on that Customer, so the router had a whole'
+                    'fetch it could drop, and pre-fetch field authorization is what makes it'
+                    'drop it. If this is one, the setting is gone or has stopped working here.'
+                    "It answered: $($entityAlone.Body)"))
+            }
+            if ($entityAlone.Body -notmatch 'Unauthorized to load field' -or
+                $entityAlone.Body -notmatch 'UNAUTHORIZED_FIELD_OR_TYPE' -or
+                $entityAlone.Body -notmatch 'Query\.browseProducts\.nodes\.reviews\.nodes\.author\.email' -or
+                $entityAlone.Body -match '"serviceName":"accounts"') {
+                Stop-Verify 'entity-level authorization' (Join-Lines @(
+                    'A guarded field selected on its own was not refused by the router,'
+                    'or was refused by Accounts instead, or the router named a different field.'
+                    'Chapter 15 prints the coordinate, so the coordinate is asserted.'
+                    "It answered: $($entityAlone.Body)"))
+            }
+
+            # The same field beside a permitted one. The fetch has to happen for
+            # displayName, so the guarded field goes with it and Accounts is the
+            # only thing that refuses. The absent router refusal is the load
+            # bearing half: it is the sentence the chapter makes.
+            $entityMixed = & $askAnonymously 'displayName email'
+            if ($entityMixed.Delta -ne 1) {
+                Stop-Verify 'entity-level authorization' (Join-Lines @(
+                    "A guarded field beside a permitted one cost Accounts $($entityMixed.Delta) requests, not 1."
+                    'A zero would mean the router had begun pruning the guarded field out of'
+                    'a fetch it still had to make, which is a better router and a wrong'
+                    'chapter: section 15.6 argues from this number, so read it before'
+                    'changing the assertion.'
+                    "It answered: $($entityMixed.Body)"))
+            }
+            if ($entityMixed.Body -notmatch '"serviceName":"accounts"' -or
+                $entityMixed.Body -notmatch 'AUTH_NOT_AUTHENTICATED' -or
+                $entityMixed.Body -match 'Unauthorized to load field') {
+                Stop-Verify 'entity-level authorization' (Join-Lines @(
+                    'A guarded field beside a permitted one was not refused by Accounts,'
+                    'or was refused by the router as well.'
+                    'The router standing aside here is what makes the subgraph half of every'
+                    'Mosaic rule load bearing rather than belt and braces. If the router has'
+                    'started refusing this too, chapter 15 needs rewriting rather than this'
+                    'assertion being flipped.'
+                    "It answered: $($entityMixed.Body)"))
+            }
+            # The tell that the selection really was mixed: a guarded-field-alone
+            # reply and this one are otherwise near identical, both ending in a
+            # null author.
+            if ($entityMixed.Body -notmatch 'Cannot return null for non-nullable field' -or
+                $entityMixed.Body -notmatch 'author\.displayName') {
+                Stop-Verify 'entity-level authorization' (Join-Lines @(
+                    'Refusing Customer.email should take the whole Customer out, because the'
+                    'field is String! and nulling it nulls the object, which leaves the'
+                    'non-null displayName beside it with nothing. That violation is missing,'
+                    'so either the selection was not mixed or nullability at the boundary has'
+                    'changed. Decision 65 meets authorization here.'
+                    "It answered: $($entityMixed.Body)"))
+            }
+
+            Write-Ok ('pre-fetch authorization removes a whole fetch and prunes nothing out of one ' +
+                "(email $($entityAlone.Delta), displayName email $($entityMixed.Delta), displayName $($entityPublic.Delta))")
 
             if (-not (Test-Path -LiteralPath $AuthRun)) {
                 Write-Skipped 'authorization run' 'scripts/auth-run.mjs does not exist yet'

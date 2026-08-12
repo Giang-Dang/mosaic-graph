@@ -273,12 +273,12 @@ Query plans are on, because `dev_mode` is on. Ask for one with
 `X-WG-Include-Query-Plan: true`, and add `X-WG-Skip-Loader: true` to get the
 plan without executing it.
 
-Three things about this router are worth reproducing rather than reading, and
-each is a case:
+Six things about this router are worth reproducing rather than reading, three
+from chapter 10 and three from chapter 15, and each is a case:
 
 ```
 node scripts/router-cases.mjs --list
-node scripts/router-cases.mjs                       # assert all three
+node scripts/router-cases.mjs                       # assert all six
 node scripts/router-cases.mjs --print resolvability-off
 ```
 

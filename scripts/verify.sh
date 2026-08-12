@@ -2185,10 +2185,11 @@ and the query plan assertions are the listing it prints.'
             step_ok 'the router answers the query neither subgraph can'
         fi
 
-        # And the three things chapter 10 says are surprising, each one a
-        # router started on purpose against a config made for the case. Same
-        # arrangement as chapter 9's composition cases and for the same reason:
-        # one implementation, called by both verify scripts.
+        # And the six things chapters 10 and 15 say are surprising, each one a
+        # router started on purpose against a config made for the case. Three
+        # are chapter 10's and three are chapter 15's. Same arrangement as
+        # chapter 9's composition cases and for the same reason: one
+        # implementation, called by both verify scripts.
         if [ ! -f "$ROUTER_CASES" ]; then
             step_skip 'router cases' 'scripts/router-cases.mjs does not exist yet'
         elif ! command -v node >/dev/null 2>&1; then
@@ -2200,7 +2201,7 @@ and the query plan assertions are the listing it prints.'
 One of the router behaviours chapters 10 and 15 describe has changed. The output
 above says which. Fix the chapter, not the assertion.'
             fi
-            step_ok 'the router behaves the five ways chapters 10 and 15 say it does'
+            step_ok 'the router behaves the six ways chapters 10 and 15 say it does'
         fi
 
         # -- chapter 11 -----------------------------------------------------
@@ -2781,6 +2782,142 @@ this is one. If it has become one again, the setting is gone from the config or
 the router stopped honouring it."
         fi
         step_ok 'a refused field costs its subgraph nothing (pre-fetch authorization is on and working)'
+
+        # And the other half of the same setting, which the step above does not
+        # measure and which chapter 15 prints a three-row table for.
+        #
+        # The step above asks for a guarded ROOT field, and a root field is a
+        # whole fetch, so refusing it removes the fetch and the count is zero. A
+        # guarded field hanging off an entity the caller is also entitled to
+        # read is a different case: the fetch has to happen for the permitted
+        # field, the guarded one travels with it, and the subgraph's own
+        # [Authorize] is the only thing that refuses. That is the argument
+        # chapter 15 makes for writing every rule twice, so it is asserted
+        # rather than described.
+        accounts_requests() {
+            grep -c 'Mosaic\.RequestTimeline' "$(subgraph_log accounts)" 2>/dev/null || echo 0
+        }
+
+        # $1 the selection on author, $2 a slug for the reply file. Leaves the
+        # cost in $ENTITY_DELTA and the reply path in $ENTITY_REPLY rather than
+        # printing either, because a step_fail inside a command substitution
+        # only ends the subshell it ran in.
+        ask_anonymously() {
+            entity_before="$(accounts_requests)"
+            printf '{"query":"{ browseProducts(first: 1) { nodes { reviews(first: 1) { nodes { author { %s } } } } } }"}' \
+                "$1" > "$TEMP_DIR/entity-$2-request.json"
+            curl -sS -o "$TEMP_DIR/entity-$2.json" -w '%{http_code}' \
+                --max-time 60 \
+                -H 'Content-Type: application/json' \
+                -H 'Accept: application/json' \
+                --data-binary "@$TEMP_DIR/entity-$2-request.json" \
+                "$ROUTER_URL/graphql" >/dev/null
+            # The log is being written by another process while we read it, so
+            # the risk is under-counting. Nothing else is talking to Accounts at
+            # this point, so over-counting is not possible.
+            sleep 1
+            entity_after="$(accounts_requests)"
+            ENTITY_DELTA=$((entity_after - entity_before))
+            ENTITY_REPLY="$TEMP_DIR/entity-$2.json"
+        }
+
+        # The control first. If browseProducts(first: 1) came back with a
+        # product that has no reviews, every row below would count zero and this
+        # step would pass by measuring nothing.
+        ask_anonymously 'displayName' 'public'
+        entity_public_delta="$ENTITY_DELTA"
+        entity_public_reply="$ENTITY_REPLY"
+        if [ "$entity_public_delta" -ne 1 ]; then
+            step_fail 'entity-level authorization' "The control cost Accounts $entity_public_delta requests, not 1.
+This asks for a public field on a Customer reached through a review author,
+which is one entity fetch. A zero here means the seeded product has no reviews
+and the two rows below would prove nothing.
+It answered:
+
+$(cat "$entity_public_reply" 2>/dev/null)"
+        fi
+        if ! grep -q '"displayName":"' "$entity_public_reply" 2>/dev/null ||
+            grep -q '"author":null' "$entity_public_reply" 2>/dev/null ||
+            grep -q 'Unauthorized to load field' "$entity_public_reply" 2>/dev/null ||
+            grep -q 'AUTH_NOT_AUTHENTICATED' "$entity_public_reply" 2>/dev/null; then
+            step_fail 'entity-level authorization' "The control did not serve a public field to an anonymous caller.
+Review.author and Customer.displayName are public on purpose: a storefront that
+stopped naming its reviewers would be the wrong graph.
+It answered:
+
+$(cat "$entity_public_reply" 2>/dev/null)"
+        fi
+
+        # The guarded field on its own. The whole fetch becomes removable, so
+        # the router refuses it and Accounts is never called.
+        ask_anonymously 'email' 'alone'
+        entity_alone_delta="$ENTITY_DELTA"
+        entity_alone_reply="$ENTITY_REPLY"
+        if [ "$entity_alone_delta" -ne 0 ]; then
+            step_fail 'entity-level authorization' "Accounts served $entity_alone_delta requests for a guarded field selected on its own.
+Nothing else was asked for on that Customer, so the router had a whole fetch it
+could drop, and pre-fetch field authorization is what makes it drop it. If this
+is one, the setting is gone or has stopped working here.
+It answered:
+
+$(cat "$entity_alone_reply" 2>/dev/null)"
+        fi
+        if ! grep -q 'Unauthorized to load field' "$entity_alone_reply" 2>/dev/null ||
+            ! grep -q 'UNAUTHORIZED_FIELD_OR_TYPE' "$entity_alone_reply" 2>/dev/null ||
+            ! grep -q 'Query\.browseProducts\.nodes\.reviews\.nodes\.author\.email' "$entity_alone_reply" 2>/dev/null ||
+            grep -q '"serviceName":"accounts"' "$entity_alone_reply" 2>/dev/null; then
+            step_fail 'entity-level authorization' "A guarded field selected on its own was not refused by the router, or was
+refused by Accounts instead, or the router named a different field. Chapter 15
+prints the coordinate, so the coordinate is asserted.
+It answered:
+
+$(cat "$entity_alone_reply" 2>/dev/null)"
+        fi
+
+        # The same field beside a permitted one. The fetch has to happen for
+        # displayName, so the guarded field goes with it and Accounts is the
+        # only thing that refuses. The absent router refusal is the load bearing
+        # half: it is the sentence the chapter makes.
+        ask_anonymously 'displayName email' 'mixed'
+        entity_mixed_delta="$ENTITY_DELTA"
+        entity_mixed_reply="$ENTITY_REPLY"
+        if [ "$entity_mixed_delta" -ne 1 ]; then
+            step_fail 'entity-level authorization' "A guarded field beside a permitted one cost Accounts $entity_mixed_delta requests, not 1.
+A zero would mean the router had begun pruning the guarded field out of a fetch
+it still had to make, which is a better router and a wrong chapter: section 15.6
+argues from this number, so read it before changing the assertion.
+It answered:
+
+$(cat "$entity_mixed_reply" 2>/dev/null)"
+        fi
+        if ! grep -q '"serviceName":"accounts"' "$entity_mixed_reply" 2>/dev/null ||
+            ! grep -q 'AUTH_NOT_AUTHENTICATED' "$entity_mixed_reply" 2>/dev/null ||
+            grep -q 'Unauthorized to load field' "$entity_mixed_reply" 2>/dev/null; then
+            step_fail 'entity-level authorization' "A guarded field beside a permitted one was not refused by Accounts, or was
+refused by the router as well. The router standing aside here is what makes the
+subgraph half of every Mosaic rule load bearing rather than belt and braces. If
+the router has started refusing this too, chapter 15 needs rewriting rather than
+this assertion being flipped.
+It answered:
+
+$(cat "$entity_mixed_reply" 2>/dev/null)"
+        fi
+        # The tell that the selection really was mixed: a guarded-field-alone
+        # reply and this one are otherwise near identical, both ending in a null
+        # author.
+        if ! grep -q 'Cannot return null for non-nullable field' "$entity_mixed_reply" 2>/dev/null ||
+            ! grep -q 'author\.displayName' "$entity_mixed_reply" 2>/dev/null; then
+            step_fail 'entity-level authorization' "Refusing Customer.email should take the whole Customer out, because the field
+is String! and nulling it nulls the object, which leaves the non-null
+displayName beside it with nothing. That violation is missing, so either the
+selection was not mixed or nullability at the boundary has changed. Decision 65
+meets authorization here.
+It answered:
+
+$(cat "$entity_mixed_reply" 2>/dev/null)"
+        fi
+
+        step_ok "pre-fetch authorization removes a whole fetch and prunes nothing out of one (email $entity_alone_delta, displayName email $entity_mixed_delta, displayName $entity_public_delta)"
 
         if [ ! -f "$AUTH_RUN" ]; then
             step_skip 'authorization run' 'scripts/auth-run.mjs does not exist yet'

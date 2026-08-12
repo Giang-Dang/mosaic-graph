@@ -187,8 +187,11 @@ headers:
 # nothing else: with it, an anonymous `{ __typename }` over ordinary HTTP is
 # answered `401 unauthorized`, on a router whose require_authentication is
 # false. Nothing in the block mentions HTTP and it closes HTTP. It is the
-# fourth case in scripts/router-cases.mjs, so a release that fixes it fails the
-# gate and gets read rather than passing quietly.
+# fifth case in scripts/router-cases.mjs, so a release that fixes it fails the
+# gate and gets read rather than passing quietly. It also refuses a subscription
+# that offers no token at all, at connection_init, with `invalid JWT token in
+# initial payload: JWT token is not a string` - so with this block on there is
+# no such thing as an anonymous subscription either.
 #
 # The second half of it, measured while the block was on: even then the router
 # does not apply that identity to its own field authorization. A subscription
@@ -198,3 +201,15 @@ headers:
 # Bearer prefix. So there is no configuration of 0.337.1 that gives Mosaic both
 # a public storefront and a subscription that can select a guarded field, and
 # the honest thing is to run without the block and say so in the chapter.
+#
+# Re-measured 2026-08-12 on a second router running this whole file plus the
+# block, counting requests at Accounts, because the shipped configuration and
+# that one turned out to answer a mixed selection differently and the reason
+# was worth having. With the block, `author { displayName email }` costs
+# Accounts one request and the ROUTER refuses the email: the fetch went out
+# carrying displayName alone, so the router pruned the guarded field out of a
+# fetch it still made. Without the block the same selection costs one request
+# and ACCOUNTS refuses, because the guarded field travelled inside it. Both
+# configurations differ in this block and in whether the connection has any
+# identity at all, and the two cannot be separated: with the block on, a
+# connection_init carrying no token is rejected outright.

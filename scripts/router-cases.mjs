@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Router configuration surprises, each reproduced on purpose. Chapter 10
-// started this file with three and chapter 15 added a fourth, which is why it
+// started this file with three and chapter 15 added three more, which is why it
 // is named after what it does rather than after one chapter: a case belongs
 // here when the thing being measured is a property of the router's
 // configuration rather than of a schema.
@@ -16,8 +16,8 @@
 // reason chapter 9's script gives: verify.ps1 and verify.sh are supposed to
 // check the same things and have drifted apart once already.
 //
-// Needs Docker, and needs the subgraphs answering on 5101 to 5106, because two
-// of the three cases are about whether the router can reach them.
+// Needs Docker, and needs the subgraphs answering on 5101 to 5106, because four
+// of the six cases are about what the router does when it reaches them.
 //
 // Usage:
 //   node scripts/router-cases.mjs                run every case
@@ -335,6 +335,114 @@ const CASES = [
       return { problems, evidence };
     },
   },
+  {
+    // Chapter 15's third, and the one that supplies the column no verify step
+    // can reach. Both verification scripts count what a guarded field costs
+    // Accounts with pre-fetch authorization ON, because that is the setting
+    // Mosaic ships; getting the OFF row the same way would mean rewriting
+    // router/config.yaml and restarting the router in the middle of a run.
+    // Here it is two routers side by side, which is what this file is for.
+    //
+    // The claim is that the setting removes a fetch it can remove ENTIRELY and
+    // prunes nothing out of a fetch that has to happen anyway. So the guarded
+    // field alone changes behaviour when the setting changes, and the guarded
+    // field beside a permitted one does not.
+    name: 'guarded-field-beside-a-permitted-one',
+    summary: 'pre-fetch authorization drops a whole fetch and never prunes a field out of one',
+    async run(ctx) {
+      const evidence = [];
+
+      const base = [
+        'authentication:',
+        '  jwt:',
+        '    jwks:',
+        '      - symmetric_algorithm: HS256',
+        '        secret: "case-signing-key-at-least-32-bytes-long"',
+        '        header_key_id: mosaic-dev',
+        'headers:',
+        '  all:',
+        '    request:',
+        '      - op: propagate',
+        '        named: Authorization',
+      ].join('\n');
+
+      const authorization = (prefetch) => [
+        'authorization:',
+        '  require_authentication: false',
+        '  reject_operation_if_unauthorized: false',
+        `  enable_pre_fetch_field_authorization: ${prefetch}`,
+      ].join('\n');
+
+      // Customer.email carries @authenticated, and it is reached here through
+      // an entity fetch from Reviews rather than as a root field. No token, no
+      // variables, no customer identifier: browseProducts is the way in and the
+      // seed guarantees the first product has reviews.
+      const selection = (fields) =>
+        `{ browseProducts(first: 1) { nodes { reviews(first: 1) { nodes { author { ${fields} } } } } } }`;
+
+      const off = await ctx.router({ config: `${base}\n${authorization(false)}` });
+      const on = await ctx.router({ config: `${base}\n${authorization(true)}` });
+
+      const offAlone = await off.ask(selection('email'));
+      const onAlone = await on.ask(selection('email'));
+      const onMixed = await on.ask(selection('displayName email'));
+
+      evidence.push(`pre-fetch off, email alone:        ${JSON.stringify(offAlone.json).slice(0, 320)}`);
+      evidence.push(`pre-fetch on,  email alone:        ${JSON.stringify(onAlone.json).slice(0, 320)}`);
+      evidence.push(`pre-fetch on,  displayName email:  ${JSON.stringify(onMixed.json).slice(0, 320)}`);
+
+      const problems = [];
+      if (!off.started) problems.push('the pre-fetch-off router did not start');
+      if (!on.started) problems.push('the pre-fetch-on router did not start');
+
+      // AUTH_NOT_AUTHENTICATED rather than the service name alone, for the
+      // reason the case above gives: a subgraph that is down also produces an
+      // error naming accounts, and that would pass for the wrong reason.
+      const accountsRefused = (reply) => {
+        const text = JSON.stringify(reply.json ?? {});
+        return text.includes('"serviceName":"accounts"') && text.includes('AUTH_NOT_AUTHENTICATED');
+      };
+
+      // Off, even the removable fetch goes out and Accounts refuses it.
+      if (!accountsRefused(offAlone)) {
+        problems.push(
+          'with pre-fetch off a guarded field selected on its own carries no refusal from '
+          + 'accounts, so the fetch this case says happens did not happen: '
+          + `${JSON.stringify(offAlone.json).slice(0, 300)}`,
+        );
+      }
+
+      // On, the same selection is refused before anything is fetched.
+      if (accountsRefused(onAlone)) {
+        problems.push(
+          'with pre-fetch on a guarded field selected on its own still reached accounts, so '
+          + 'the whole fetch was not dropped. That is the one thing the setting is for: '
+          + `${JSON.stringify(onAlone.json).slice(0, 300)}`,
+        );
+      }
+
+      // On, and beside a permitted field, the setting buys nothing: the fetch
+      // has to happen and the guarded field rides along inside it. This is the
+      // row chapter 15 argues from, and the row that makes the subgraph's own
+      // [Authorize] load bearing rather than belt and braces.
+      if (!accountsRefused(onMixed)) {
+        problems.push(
+          'with pre-fetch on a guarded field beside a permitted one did not reach accounts. '
+          + 'Either the router has begun pruning a field out of a fetch it still makes, which '
+          + 'would be a better router and a wrong chapter, or the permitted field stopped '
+          + `needing a fetch: ${JSON.stringify(onMixed.json).slice(0, 300)}`,
+        );
+      }
+      if (JSON.stringify(onMixed.json ?? {}).includes('Unauthorized to load field')) {
+        problems.push(
+          'with pre-fetch on the router refused a guarded field beside a permitted one itself. '
+          + 'Section 15.6 argues from the router standing aside here; if it has stopped '
+          + `standing aside, the chapter needs rewriting rather than this assertion flipping: ${JSON.stringify(onMixed.json).slice(0, 300)}`,
+        );
+      }
+      return { problems, evidence };
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -526,7 +634,7 @@ async function withContext(fn) {
 const args = process.argv.slice(2);
 
 if (args[0] === '--list') {
-  for (const testCase of CASES) console.log(`${testCase.name.padEnd(20)}${testCase.summary}`);
+  for (const testCase of CASES) console.log(`${testCase.name.padEnd(40)}${testCase.summary}`);
   process.exit(0);
 }
 
@@ -546,16 +654,16 @@ for (const testCase of selected) {
     result = await withContext((ctx) => testCase.run(ctx));
   } catch (error) {
     failures += 1;
-    console.log(`  FAILED   ${testCase.name.padEnd(20)}${testCase.summary}`);
+    console.log(`  FAILED   ${testCase.name.padEnd(40)}${testCase.summary}`);
     for (const line of String(error.message).split('\n')) console.log(`             ${line}`);
     continue;
   }
 
   if (result.problems.length === 0) {
-    console.log(`  ok       ${testCase.name.padEnd(20)}${testCase.summary}`);
+    console.log(`  ok       ${testCase.name.padEnd(40)}${testCase.summary}`);
   } else {
     failures += 1;
-    console.log(`  FAILED   ${testCase.name.padEnd(20)}${testCase.summary}`);
+    console.log(`  FAILED   ${testCase.name.padEnd(40)}${testCase.summary}`);
     for (const problem of result.problems) console.log(`             ${problem}`);
   }
 
