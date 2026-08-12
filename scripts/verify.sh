@@ -277,6 +277,11 @@ subgraph_url() {
         accounts)  printf '%s' "$MOSAIC_ACCOUNTS_URL" ;;
         reviews)   printf '%s' "$MOSAIC_REVIEWS_URL" ;;
         ordering)  printf '%s' "$MOSAIC_ORDERING_URL" ;;
+        # Missing since chapter 13 added the seventh service. Nothing had asked
+        # for it, because every caller so far named one of the six by hand;
+        # chapter 16 is the first step that walks all of SUBGRAPHS and looks a
+        # url up, and it would have got an empty string.
+        nodes)     printf '%s' "$MOSAIC_NODES_URL" ;;
     esac
 }
 
@@ -1328,6 +1333,44 @@ $(schema_diff "$SAMPLE_SCHEMA_DIR/$sample.graphql" "$TEMP_DIR/$sample.graphql" "
     step_ok 'the interface-object sample still declares the two directives chapter 13 prints'
 fi
 
+# -- 4d. the executor-internals sample ---------------------------------------
+
+# Chapter 16. Five facts about the executor that are true inside one process and
+# need no database, no router and no network: a pure field costs no resolver
+# task, RunTask counts no resolver, AddAuthorization alone defeats the validation
+# cache, a warmup request fills the operation cache without executing, and a
+# burst of identical first-time requests compiles once.
+#
+# The sample asserts them itself and exits non-zero on the first one that stops
+# being true, so this step is a build and a run rather than a list of
+# expectations kept in step by hand.
+EXECUTOR_INTERNALS_PROJECT="$REPO_ROOT/samples/executor-internals/Mosaic.Sample.ExecutorInternals.csproj"
+
+if [ ! -f "$EXECUTOR_INTERNALS_PROJECT" ]; then
+    step_skip 'executor-internals sample' 'samples/executor-internals does not exist yet'
+else
+    if ! executor_output="$(dotnet run --project "$EXECUTOR_INTERNALS_PROJECT" -c Release --no-launch-profile 2>&1)"; then
+        step_fail 'executor-internals sample' "One of the five executor cases failed. Its own output says which:
+
+$executor_output
+
+Each case is a fact chapter 16 prints. A failure here is either a HotChocolate
+release that changed the behaviour, in which case the chapter is now wrong and
+needs re-measuring, or a change to the sample itself. Do not relax the assertion
+to make the run pass."
+    fi
+
+    executor_cases_passed="$(printf '%s\n' "$executor_output" | grep -c '^ *PASS *$' || true)"
+    if [ "$executor_cases_passed" -ne 5 ]; then
+        step_fail 'executor-internals sample' "The sample exited zero but reported $executor_cases_passed passing cases, not 5.
+
+A case that stopped running is a case that stopped checking. Either a case was
+removed on purpose, in which case update this number and say why in the commit,
+or the runner is skipping one."
+    fi
+    step_ok 'the executor-internals sample: 5 cases, all passing'
+fi
+
 # -- 5. start the seven subgraphs --------------------------------------------
 
 for entry in $SUBGRAPHS; do
@@ -1798,6 +1841,86 @@ reordering the list to match."
     fi
 done
 step_ok "request pipelines: $(printf '%s\n' "$EXPECTED_PIPELINE" | grep -c .) middleware in 4 subgraphs and $(printf '%s\n' "$EXPECTED_AUTHORIZED_PIPELINE" | grep -c .) in the 3 that authorize (accounts, reviews, ordering), each in order"
+
+# -- what that same line cost the validation cache ---------------------------
+
+# Chapter 16. AddMosaicAuthorization() is AddAuthorization() and nothing else,
+# and besides the two middleware above it registers AuthorizeValidationRule,
+# whose IsCacheable is hard-coded false
+# (Core/src/Authorization/AuthorizeValidationRule.cs:14 at tag 16.6.0). One
+# non-cacheable rule is enough to make DocumentValidator.HasNonCacheableRules
+# true, and DocumentValidationMiddleware re-opens the validation phase on every
+# document-cache hit whenever it is.
+#
+# So the one line that made three pipelines fifteen long also stopped those three
+# services skipping validation on a repeat request, and nothing about
+# authorization has to be used for it: merely calling the method is enough.
+# samples/executor-internals proves that half in isolation. This step is the same
+# fact on the real graph.
+#
+# A behaviour, not a timing: what is asserted is whether the phase ran at all,
+# which the timeline reports as a dash when it did not.
+for entry in $SUBGRAPHS; do
+    validation_name="${entry%%:*}"
+    validation_url="$(subgraph_url "$validation_name")"
+
+    # Twice, so the second one is a document-cache hit.
+    for _ in 1 2; do
+        curl -sS -o /dev/null --max-time 60 \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            --data '{"query":"{ __typename }"}' \
+            "$validation_url/graphql" || true
+    done
+
+    # No space before "document": the timeline writes "(document cache hit",
+    # so a pattern that asks for one matches nothing and reports the listener
+    # as missing.
+    validation_line="$(grep -E 'parse .*validate .*document cache ' "$(subgraph_log "$validation_name")" 2>/dev/null | tail -1)"
+
+    if [ -z "$validation_line" ]; then
+        step_fail 'validation cache' "No request timeline was logged by $validation_name.
+
+RequestTimelineListener writes one line per request at Information. Either the
+listener is gone or the log level hides it."
+    fi
+
+    case "$validation_line" in
+        *'document cache hit'*) ;;
+        *)
+            step_fail 'validation cache' "The repeat request to $validation_name did not report a document cache hit.
+
+Both requests send the same document, so the second must hit. Without that hit
+this step is measuring a cold request and proves nothing.
+
+$validation_line"
+            ;;
+    esac
+
+    validation_phase="$(printf '%s' "$validation_line" | sed -n 's/.*validate \([^ ][^ ]*\) compile .*/\1/p')"
+
+    case " $AUTHORIZED_SUBGRAPHS " in
+        *" $validation_name "*)
+            if [ "$validation_phase" = '-' ]; then
+                step_fail 'validation cache' "$validation_name authorizes, so it should have re-validated on a document cache hit, and it did not.
+
+Either AuthorizeValidationRule became cacheable, or this service stopped calling
+AddMosaicAuthorization. Chapter 16 prints this split; find out which half moved
+before changing the expectation."
+            fi
+            ;;
+        *)
+            if [ "$validation_phase" != '-' ]; then
+                step_fail 'validation cache' "$validation_name does not authorize, yet it re-validated on a document cache hit (validate $validation_phase).
+
+Something registered a non-cacheable validation rule in a service that is not
+supposed to have one. AddGraphQLServer() also registers one when the host
+environment is not Development, so check that first."
+            fi
+            ;;
+    esac
+done
+step_ok 'validation on a document cache hit: skipped in 4 subgraphs, re-run in the 3 that authorize'
 
 # Reviews specifically, because it is the service chapter 3 walked and the one
 # whose log the rest of this section reads. It authorizes since chapter 15, so

@@ -1015,6 +1015,50 @@ try {
         Write-Ok 'the interface-object sample still declares the two directives chapter 13 prints'
     }
 
+    # -- 4d. the executor-internals sample ---------------------------------
+
+    # Chapter 16. Five facts about the executor that are true inside one
+    # process and need no database, no router and no network: a pure field
+    # costs no resolver task, RunTask counts no resolver, AddAuthorization
+    # alone defeats the validation cache, a warmup request fills the operation
+    # cache without executing, and a burst of identical first-time requests
+    # compiles once.
+    #
+    # The sample asserts them itself and exits non-zero on the first one that
+    # stops being true, so this step is a build and a run rather than a list of
+    # expectations kept in step by hand. Same arrangement as scripts/*-cases.mjs,
+    # in C# because every one of these is an in-process fact about the library
+    # rather than something a composer or a router can be asked about.
+    $ExecutorInternalsProject = Join-Path $RepoRoot 'samples' 'executor-internals' 'Mosaic.Sample.ExecutorInternals.csproj'
+
+    if (-not (Test-Path $ExecutorInternalsProject)) {
+        Write-Skipped 'executor-internals sample' 'samples/executor-internals does not exist yet'
+    } else {
+        $executorOutput = & dotnet run --project $ExecutorInternalsProject -c Release --no-launch-profile 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Stop-Verify 'executor-internals sample' (Join-Lines @(
+                'One of the five executor cases failed. Its own output says which:'
+                ''
+                ($executorOutput | Out-String).TrimEnd()
+                ''
+                'Each case is a fact chapter 16 prints. A failure here is either a'
+                'HotChocolate release that changed the behaviour, in which case the'
+                'chapter is now wrong and needs re-measuring, or a change to the'
+                'sample itself. Do not relax the assertion to make the run pass.'))
+        }
+
+        $casesPassed = @([regex]::Matches(($executorOutput | Out-String), '(?m)^\s+PASS\s*$')).Count
+        if ($casesPassed -ne 5) {
+            Stop-Verify 'executor-internals sample' (Join-Lines @(
+                "The sample exited zero but reported $casesPassed passing cases, not 5."
+                ''
+                'A case that stopped running is a case that stopped checking. Either a'
+                'case was removed on purpose, in which case update this number and say'
+                'why in the commit, or the runner is skipping one.'))
+        }
+        Write-Ok 'the executor-internals sample: 5 cases, all passing'
+    }
+
     # -- 5. start the seven subgraphs --------------------------------------
 
     foreach ($name in $Subgraphs.Keys) {
@@ -1526,6 +1570,86 @@ try {
     Write-Ok ("request pipelines: $($ExpectedPipeline.Count) middleware in " +
         "$($Subgraphs.Count - $AuthorizedSubgraphs.Count) subgraphs and " +
         "$($ExpectedAuthorizedPipeline.Count) in the $($AuthorizedSubgraphs.Count) that authorize, each in order")
+
+    # -- 6c. what that same line cost the validation cache ------------------
+
+    # Chapter 16. AddMosaicAuthorization() is AddAuthorization() and nothing
+    # else, and besides the two middleware above it registers
+    # AuthorizeValidationRule, whose IsCacheable is hard-coded false
+    # (Core/src/Authorization/AuthorizeValidationRule.cs:14 at tag 16.6.0). One
+    # non-cacheable rule is enough to make DocumentValidator.HasNonCacheableRules
+    # true, and DocumentValidationMiddleware re-opens the validation phase on
+    # every document-cache hit whenever it is.
+    #
+    # So the one line that made three pipelines fifteen long also stopped those
+    # three services skipping validation on a repeat request, and nothing about
+    # authorization has to be used for it: merely calling the method is enough.
+    # samples/executor-internals proves that half in isolation, on two schemas
+    # that differ in the call and in nothing else. This step is the same fact on
+    # the real graph.
+    #
+    # Chapter 3 measured the skip before any of this existed and was right. It is
+    # still right for the other four services, which is what makes this a change
+    # rather than a correction.
+    #
+    # A behaviour, not a timing: what is asserted is whether the phase ran at
+    # all, which the timeline reports as a dash when it did not. How long it took
+    # is never asserted (decisions 62 and 66).
+    foreach ($name in $Subgraphs.Keys) {
+        $url = $Subgraphs[$name].Url
+
+        # Twice, so that the second one is a document-cache hit. The document is
+        # the smallest one every subgraph can answer.
+        Invoke-Gql -Url $url -Query '{ __typename }' -Step "validation cache ($name)" | Out-Null
+        Invoke-Gql -Url $url -Query '{ __typename }' -Step "validation cache ($name)" | Out-Null
+
+        $timelines = @([regex]::Matches(
+            (Get-LogText $Subgraphs[$name].Stdout),
+            '(?m)^.*parse \S+ validate (\S+) compile .*document cache (\w+),.*$'))
+
+        if ($timelines.Count -eq 0) {
+            Stop-Verify 'validation cache' (Join-Lines @(
+                "No request timeline was logged by $name."
+                ''
+                'RequestTimelineListener writes one line per request at Information.'
+                'Either the listener is gone or the log level hides it.'))
+        }
+
+        $last = $timelines[$timelines.Count - 1]
+        $validatePhase = $last.Groups[1].Value
+        $documentCache = $last.Groups[2].Value
+
+        if ($documentCache -ne 'hit') {
+            Stop-Verify 'validation cache' (Join-Lines @(
+                "The repeat request to $name reported a document cache $documentCache, not a hit."
+                ''
+                'Both requests send the same document, so the second must hit. Without'
+                'that hit this step is measuring a cold request and proves nothing.'))
+        }
+
+        $authorizes = $AuthorizedSubgraphs -contains $name
+
+        if ($authorizes -and $validatePhase -eq '-') {
+            Stop-Verify 'validation cache' (Join-Lines @(
+                "$name authorizes, so it should have re-validated on a document cache hit, and it did not."
+                ''
+                'Either AuthorizeValidationRule became cacheable, or this service'
+                'stopped calling AddMosaicAuthorization. Chapter 16 prints this split;'
+                'find out which half moved before changing the expectation.'))
+        }
+
+        if (-not $authorizes -and $validatePhase -ne '-') {
+            Stop-Verify 'validation cache' (Join-Lines @(
+                "$name does not authorize, yet it re-validated on a document cache hit (validate $validatePhase)."
+                ''
+                'Something registered a non-cacheable validation rule in a service that'
+                'is not supposed to have one. AddGraphQLServer() also registers one when'
+                'the host environment is not Development, so check that first.'))
+        }
+    }
+    Write-Ok ("validation on a document cache hit: skipped in " +
+        "$($Subgraphs.Count - $AuthorizedSubgraphs.Count) subgraphs, re-run in the " +
+        "$($AuthorizedSubgraphs.Count) that authorize")
 
     $logText = Get-LogText $reviewsStdout
 

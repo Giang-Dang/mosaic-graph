@@ -21,5 +21,6 @@
     <Project Path="samples/entity-resolution/Mosaic.Sample.Entities.Crates/Mosaic.Sample.Entities.Crates.csproj" />
     <Project Path="samples/interface-object/Mosaic.Sample.InterfaceObject.Library/Mosaic.Sample.InterfaceObject.Library.csproj" />
     <Project Path="samples/interface-object/Mosaic.Sample.InterfaceObject.Ratings/Mosaic.Sample.InterfaceObject.Ratings.csproj" />
+    <Project Path="samples/executor-internals/Mosaic.Sample.ExecutorInternals.csproj" />
   </Folder>
 </Solution>
