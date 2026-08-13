@@ -264,6 +264,7 @@ $AuthPostmanEnv     = Join-Path $RepoRoot 'postman' 'mosaic-auth.local.postman_e
 # the router only reports if you ask it to log one.
 $SatisfiabilityCases = Join-Path $RepoRoot 'scripts' 'satisfiability-cases.mjs'
 $PlannerCases        = Join-Path $RepoRoot 'scripts' 'planner-cases.mjs'
+$WireCases           = Join-Path $RepoRoot 'scripts' 'wire-cases.mjs'
 
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
@@ -2152,6 +2153,22 @@ try {
                         'chapter rather than loosening the assertion.'))
                 }
                 Write-Ok 'the plan cache keys on what chapter 17 says, and tracing still skips it'
+            }
+
+            # Chapter 18 stays on the client-to-router side of the wire. These
+            # cases start isolated routers because enabling APQ or @defer on
+            # the graph under test would change the defaults earlier chapters
+            # deliberately measured.
+            if (-not (Test-Path -LiteralPath $WireCases)) {
+                Write-Skipped 'wire cases' 'scripts/wire-cases.mjs does not exist yet'
+            } elseif (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+                Stop-Verify 'wire cases' 'node is not on PATH; it is needed to run scripts/wire-cases.mjs.'
+            } else {
+                & node $WireCases
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Verify 'wire cases' "scripts/wire-cases.mjs exited with $LASTEXITCODE. The output above says which client-to-router behaviour changed."
+                }
+                Write-Ok 'APQ, multipart defer and response compression match chapter 18'
             }
 
             # -- chapter 11 -------------------------------------------------

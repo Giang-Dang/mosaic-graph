@@ -214,6 +214,7 @@ AUTH_POSTMAN_ENV="$REPO_ROOT/postman/mosaic-auth.local.postman_environment.json"
 # only reports if you ask it to log one.
 SATISFIABILITY_CASES="$REPO_ROOT/scripts/satisfiability-cases.mjs"
 PLANNER_CASES="$REPO_ROOT/scripts/planner-cases.mjs"
+WIRE_CASES="$REPO_ROOT/scripts/wire-cases.mjs"
 
 # What the storefront query costs, and where. Chapter 12 prints these numbers,
 # so the gate produces them: the same query through the router with and without
@@ -2398,6 +2399,20 @@ better router and a wrong chapter 17: rewrite the chapter rather than loosening
 the assertion.'
             fi
             step_ok 'the plan cache keys on what chapter 17 says, and tracing still skips it'
+        fi
+
+        # Chapter 18 measures client-to-router HTTP traffic on isolated routers,
+        # so its settings cannot change the default graph earlier chapters use.
+        if [ ! -f "$WIRE_CASES" ]; then
+            step_skip 'wire cases' 'scripts/wire-cases.mjs does not exist yet'
+        elif ! command -v node >/dev/null 2>&1; then
+            step_fail 'wire cases' 'node is not on PATH; it is needed to run scripts/wire-cases.mjs.'
+        else
+            node "$WIRE_CASES"
+            if [ $? -ne 0 ]; then
+                step_fail 'wire cases' 'scripts/wire-cases.mjs failed. The output above says which client-to-router behaviour changed.'
+            fi
+            step_ok 'APQ, multipart defer and response compression match chapter 18'
         fi
 
         # -- chapter 11 -----------------------------------------------------
